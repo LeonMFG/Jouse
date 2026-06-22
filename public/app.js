@@ -138,7 +138,7 @@ function renderShell(content) {
   let tabs;
   if (isStaff()) {
     tabs = [['queue', 'Review Queue'], ['roster', 'My Members'], ['pending', 'Pending']];
-    if (u.role === 'admin') tabs.push(['roles', 'Manage Roles']);
+    if (u.role === 'admin') { tabs.push(['roles', 'Manage Roles']); tabs.push(['challenges', 'Challenges']); }
   } else {
     tabs = [['dashboard', 'My Challenge']];
   }
@@ -266,6 +266,7 @@ function render() {
   else if (state.view === 'queue') renderQueue();
   else if (state.view === 'pending') renderPending();
   else if (state.view === 'roles') renderRoles();
+  else if (state.view === 'challenges') renderChallenges();
   else if (state.view === 'member') renderMemberDetail();
 }
 
@@ -372,8 +373,10 @@ async function renderDashboard() {
   const groups = groupItems(data.items);
   const groupsHtml = groups.map((g) => renderGroup(g, rules, p, /*staff*/ false)).join('');
 
-  setView(hero + summary + groupsHtml);
+  const exportMine = '<div style="margin:2px 0 14px"><button class="btn ghost sm" id="export-mine">⬇ Download my progress (Excel)</button></div>';
+  setView(hero + exportMine + summary + groupsHtml);
   wireMemberItems();
+  document.getElementById('export-mine')?.addEventListener('click', () => { window.location.assign('/api/my/export'); });
 }
 
 function groupItems(items) {
@@ -805,12 +808,14 @@ async function renderMemberDetail() {
 
   setView(`<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
       <button class="back-link" id="back">← Back to my members</button>
+      <button class="btn ghost sm" id="export-xls">⬇ Excel</button>
       <button class="btn ghost sm" id="reset-pw">Reset password</button>
     </div>
     <p class="section-sub" style="margin:6px 0 14px">You can approve a submitted item, or mark anything complete directly (e.g. taking meeting attendance).</p>
     ${hero}${groups}`);
 
   document.getElementById('back').addEventListener('click', () => { state.view = 'roster'; render(); });
+  document.getElementById('export-xls')?.addEventListener('click', () => { window.location.assign('/api/staff/members/' + m.id + '/export'); });
   document.getElementById('reset-pw').addEventListener('click', async () => {
     if (!confirm(`Reset ${m.name}'s password? Their current password stops working and you'll get a temporary one to give them.`)) return;
     try {
@@ -841,6 +846,170 @@ function fmtDate(s) {
   const d = new Date(s.replace(' ', 'T') + (s.includes('T') ? '' : 'Z'));
   if (isNaN(d)) return s;
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ===========================================================================
+// ADMIN (VPMD) — MANAGE CHALLENGES (requirements)
+// ===========================================================================
+async function renderChallenges() {
+  let data;
+  try { data = await api('/admin/requirements'); } catch (e) { return showError(e); }
+  const tiers = ['sigma', 'phi', 'epsilon'];
+  const tierName = { sigma: 'Sigma', phi: 'Phi', epsilon: 'Epsilon' };
+  const cur = state.challTier || 'sigma';
+  const showHidden = !!state.challShowHidden;
+
+  const all = data.requirements.filter((r) => r.tier === cur);
+  const items = all.filter((r) => (showHidden ? r.active === 0 : r.active === 1));
+  const hiddenCount = all.filter((r) => r.active === 0).length;
+
+  const meetings = items.filter((r) => r.kind === 'meeting');
+  const activities = items.filter((r) => r.kind !== 'meeting');
+  const catOrder = [];
+  const byCat = new Map();
+  for (const a of activities) {
+    if (!byCat.has(a.category)) { byCat.set(a.category, []); catOrder.push(a.category); }
+    byCat.get(a.category).push(a);
+  }
+
+  const itemRow = (r) => `
+    <div class="req">
+      <div class="status-dot ${r.active ? '' : 'denied'}"></div>
+      <div class="body">
+        <div class="title">${esc(r.title)}${r.mandatory ? '<span class="mand">Mandatory</span>' : ''}</div>
+        ${r.description ? `<div class="desc">${esc(r.description)}</div>` : ''}
+      </div>
+      <div class="right">
+        ${showHidden
+          ? `<button class="btn green sm" data-restore="${r.id}">Restore</button>`
+          : `<button class="btn ghost tiny" data-edit="${r.id}">Edit</button>
+             <button class="btn rose sm" data-remove="${r.id}">Remove</button>`}
+      </div>
+    </div>`;
+
+  const groupHtml = (name, rows) => `
+    <div class="group">
+      <div class="group-head"><h3>${esc(name)}</h3><span class="count">${rows.length}</span></div>
+      ${rows.map(itemRow).join('')}
+    </div>`;
+
+  const listHtml = items.length
+    ? (meetings.length ? groupHtml('Meetings', meetings) : '') + catOrder.map((c) => groupHtml(c, byCat.get(c))).join('')
+    : `<div class="empty"><div class="big">📋</div>${showHidden ? 'No hidden items in this challenge.' : 'No items yet — use “Add item”.'}</div>`;
+
+  const tabsHtml = tiers.map((t) =>
+    `<button class="tab ${t === cur ? 'active' : ''}" data-ctier="${t}">${tierName[t]}</button>`).join('');
+
+  setView(`
+    <h2 class="section-title">Manage Challenges</h2>
+    <p class="section-sub">Add, edit, or hide the meetings and activities in each challenge. Changes apply to everyone in that challenge. Hiding an item removes it from dashboards but keeps all past records.</p>
+    <div class="tabs">${tabsHtml}</div>
+    <div class="filter-row" style="justify-content:space-between">
+      <button class="btn sm" id="add-item">+ Add item</button>
+      <label style="font-size:13px;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="show-hidden" ${showHidden ? 'checked' : ''}/> Show hidden${hiddenCount ? ' (' + hiddenCount + ')' : ''}
+      </label>
+    </div>
+    <div id="chall-list">${listHtml}</div>`);
+
+  App.querySelectorAll('[data-ctier]').forEach((b) => b.addEventListener('click', () => {
+    state.challTier = b.dataset.ctier; state.challShowHidden = false; renderChallenges();
+  }));
+  document.getElementById('show-hidden').addEventListener('change', (e) => {
+    state.challShowHidden = e.target.checked; renderChallenges();
+  });
+  document.getElementById('add-item').addEventListener('click', () => openItemModal(cur, null, data));
+
+  App.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
+    const r = data.requirements.find((x) => x.id === Number(b.dataset.edit));
+    if (r) openItemModal(cur, r, data);
+  }));
+  App.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', async () => {
+    const r = data.requirements.find((x) => x.id === Number(b.dataset.remove));
+    if (!r) return;
+    if (!confirm(`Hide “${r.title}”?\n\nIt will disappear from members’ dashboards, but every past submission and approval is kept. You can bring it back anytime with “Show hidden”.`)) return;
+    try { await api(`/admin/requirements/${r.id}`, { method: 'DELETE' }); toast('Item hidden', 'ok'); renderChallenges(); }
+    catch (e) { toast(e.message, 'err'); }
+  }));
+  App.querySelectorAll('[data-restore]').forEach((b) => b.addEventListener('click', async () => {
+    try { await api(`/admin/requirements/${b.dataset.restore}`, { method: 'PATCH', body: { active: 1 } }); toast('Item restored', 'ok'); renderChallenges(); }
+    catch (e) { toast(e.message, 'err'); }
+  }));
+}
+
+function openItemModal(tier, existing, data) {
+  const isEdit = !!existing;
+  const isMeeting = isEdit ? existing.kind === 'meeting' : false;
+  const cats = [...new Set(data.requirements
+    .filter((r) => r.tier === tier && r.kind !== 'meeting')
+    .map((r) => r.category).filter(Boolean))];
+  const curCat = existing && existing.category && existing.category !== 'Meetings' ? existing.category : '';
+
+  ModalRoot.innerHTML = `
+    <div class="modal-overlay" id="ci-overlay">
+      <div class="modal" style="max-width:520px">
+        <div class="modal-head">
+          <h3>${isEdit ? 'Edit item' : 'Add item'} — ${tier[0].toUpperCase() + tier.slice(1)} Challenge</h3>
+        </div>
+        <div class="modal-body">
+          <div id="ci-error"></div>
+          ${isEdit ? '' : `
+          <div class="field">
+            <label>Type</label>
+            <select id="ci-kind">
+              <option value="activity">Activity / checklist item</option>
+              <option value="meeting">Meeting</option>
+            </select>
+          </div>`}
+          <div class="field" id="ci-cat-field" ${isMeeting ? 'style="display:none"' : ''}>
+            <label>Category</label>
+            <input id="ci-category" list="ci-cats" placeholder="e.g. Sound Mind" value="${esc(curCat)}" />
+            <datalist id="ci-cats">${cats.map((c) => `<option value="${esc(c)}"></option>`).join('')}</datalist>
+          </div>
+          <div class="field">
+            <label>Title</label>
+            <input id="ci-title" placeholder="What should the brother do?" value="${esc(existing ? existing.title : '')}" />
+          </div>
+          <div class="field">
+            <label>Description (optional)</label>
+            <textarea id="ci-desc" rows="3" placeholder="Extra detail shown under the title">${esc(existing && existing.description ? existing.description : '')}</textarea>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:14px"><input type="checkbox" id="ci-mand" ${existing && existing.mandatory ? 'checked' : ''}/> Mandatory item</label>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost" id="ci-cancel">Cancel</button>
+          <button class="btn" id="ci-save">${isEdit ? 'Save changes' : 'Add item'}</button>
+        </div>
+      </div>
+    </div>`;
+
+  const close = () => { ModalRoot.innerHTML = ''; };
+  document.getElementById('ci-cancel').addEventListener('click', close);
+  document.getElementById('ci-overlay').addEventListener('click', (e) => { if (e.target.id === 'ci-overlay') close(); });
+  const kindSel = document.getElementById('ci-kind');
+  if (kindSel) kindSel.addEventListener('change', () => {
+    document.getElementById('ci-cat-field').style.display = kindSel.value === 'meeting' ? 'none' : '';
+  });
+
+  document.getElementById('ci-save').addEventListener('click', async () => {
+    const title = document.getElementById('ci-title').value.trim();
+    const description = document.getElementById('ci-desc').value.trim();
+    const mandatory = document.getElementById('ci-mand').checked;
+    const err = (m) => document.getElementById('ci-error').innerHTML = `<div class="error-banner">${esc(m)}</div>`;
+    if (!title) return err('Please enter a title.');
+    const btn = document.getElementById('ci-save'); btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      if (isEdit) {
+        const category = isMeeting ? 'Meetings' : (document.getElementById('ci-category').value.trim() || 'General');
+        await api(`/admin/requirements/${existing.id}`, { method: 'PATCH', body: { title, description, mandatory, category } });
+      } else {
+        const kind = kindSel.value;
+        const category = kind === 'meeting' ? 'Meetings' : (document.getElementById('ci-category').value.trim() || 'General');
+        await api('/admin/requirements', { method: 'POST', body: { tier, kind, category, title, description, mandatory } });
+      }
+      close(); toast('Saved', 'ok'); renderChallenges();
+    } catch (e) { err(e.message); btn.disabled = false; btn.textContent = isEdit ? 'Save changes' : 'Add item'; }
+  });
 }
 
 boot();
