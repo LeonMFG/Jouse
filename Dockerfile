@@ -15,7 +15,6 @@ ENV PORT=3000
 # Persistent data lives on a mounted volume at /data (database + uploaded proof files)
 ENV DATA_DIR=/data
 ENV UPLOAD_DIR=/data/uploads
-VOLUME /data
 
 EXPOSE 3000
 
