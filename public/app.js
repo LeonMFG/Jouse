@@ -103,12 +103,7 @@ function renderAuth() {
           ${login ? "New member? <a id='to-register'>Create an account</a>"
                   : "Already have an account? <a id='to-login'>Sign in</a>"}
         </div>
-        ${login ? `<div class="seed-hint">
-          <b>Demo accounts</b> (password <code>sigep123</code>):<br/>
-          VPMD/Admin · <code>vpmd@fiusigep.com</code><br/>
-          Phi Coordinator · <code>phi.coordinator@fiusigep.com</code><br/>
-          Member · <code>brother@fiusigep.com</code>
-        </div>` : ''}
+        
       </div>
     </div>`;
 
