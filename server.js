@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { db } from './db.js';
 import { TIERS } from './bmp-data.js';
+import ExcelJS from 'exceljs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -440,6 +441,170 @@ app.post('/api/admin/users/:id/reset-password', authRequired, adminRequired, (re
   const tempPassword = genTempPassword();
   db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(bcrypt.hashSync(tempPassword, 10), u.id);
   res.json({ tempPassword, name: u.name });
+});
+
+// ===========================================================================
+// Excel export of a member's progress
+// ===========================================================================
+function statusLabel(kind, status) {
+  if (status === 'approved') return 'Approved';
+  if (status === 'pending') return 'Pending review';
+  if (status === 'denied') return 'Needs redo';
+  return kind === 'meeting' ? 'Not attended' : 'Not started';
+}
+
+async function buildMemberWorkbook(member) {
+  const info = TIERS[member.tier] || { name: member.tier, rules: {} };
+  const reqs = requirementsForTier(member.tier);
+  const subs = db.prepare('SELECT * FROM submissions WHERE user_id = ?').all(member.id);
+  const byReq = new Map(subs.map((s) => [s.requirement_id, s]));
+  const summary = summarize(member.id, member.tier);
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'FIU SigEp BMP Tracker';
+  wb.created = new Date();
+  const ws = wb.addWorksheet('Progress');
+  ws.columns = [
+    { header: 'Category', key: 'category', width: 26 },
+    { header: 'Type', key: 'kind', width: 12 },
+    { header: 'Item', key: 'title', width: 60 },
+    { header: 'Mandatory', key: 'mandatory', width: 11 },
+    { header: 'Status', key: 'status', width: 15 },
+    { header: 'Reflection', key: 'reflection', width: 50 },
+    { header: 'Coordinator note', key: 'note', width: 30 },
+    { header: 'Submitted', key: 'submitted', width: 14 },
+    { header: 'Reviewed', key: 'reviewed', width: 14 },
+  ];
+
+  // Insert a title + summary block above the table header (which is row 1).
+  ws.spliceRows(1, 0,
+    ['Balanced Man Program — ' + (info.name || member.tier) + ' Progress'],
+    ['Brother: ' + member.name],
+    ['Email: ' + member.email],
+    ['Challenge: ' + (info.name || member.tier)],
+    ['Exported: ' + new Date().toLocaleString()],
+    ['Meetings ' + summary.meetings.done + '/' + summary.meetings.required +
+     '    Activities ' + summary.activities.done + '/' + summary.activities.target +
+     '    Mandatory ' + summary.mandatory.done + '/' + summary.mandatory.total +
+     '    Complete: ' + (summary.complete ? 'YES' : 'No')],
+    [],
+  );
+  ws.getRow(1).font = { bold: true, size: 14 };
+  ws.getRow(6).font = { bold: true };
+  const headerRow = ws.getRow(8); // table header after the inserted block
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF7B1D2B' } };
+
+  const fmtDate = (val) => {
+    if (!val) return '';
+    const str = String(val);
+    const d = new Date(str.replace(' ', 'T') + (str.includes('T') ? '' : 'Z'));
+    return isNaN(d) ? str : d.toLocaleDateString();
+  };
+
+  reqs.forEach((r) => {
+    const sub = byReq.get(r.id) || null;
+    const status = sub ? sub.status : 'todo';
+    ws.addRow({
+      category: r.category || '',
+      kind: r.kind === 'meeting' ? 'Meeting' : 'Activity',
+      title: r.title,
+      mandatory: r.mandatory ? 'Yes' : '',
+      status: statusLabel(r.kind, status),
+      reflection: sub && sub.reflection ? sub.reflection : '',
+      note: sub && sub.review_note ? sub.review_note : '',
+      submitted: sub ? fmtDate(sub.submitted_at) : '',
+      reviewed: sub ? fmtDate(sub.reviewed_at) : '',
+    });
+  });
+
+  ws.eachRow((row) => { row.alignment = { vertical: 'top', wrapText: true }; });
+  return wb;
+}
+
+async function sendWorkbook(res, wb, filename) {
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
+  await wb.xlsx.write(res);
+  res.end();
+}
+
+function safeName(name) {
+  return String(name || '').replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'brother';
+}
+
+// Staff: download any of their members' progress as Excel.
+app.get('/api/staff/members/:id/export', authRequired, staffRequired, async (req, res) => {
+  const member = db.prepare("SELECT id, name, email, tier, start_date FROM users WHERE id = ? AND role='member'").get(req.params.id);
+  if (!member) return res.status(404).json({ error: 'Member not found.' });
+  if (!tiersFor(req.user).includes(member.tier)) return res.status(403).json({ error: 'Not in your challenge group.' });
+  try {
+    const wb = await buildMemberWorkbook(member);
+    await sendWorkbook(res, wb, 'BMP_' + safeName(member.name) + '_progress.xlsx');
+  } catch (e) {
+    res.status(500).json({ error: 'Could not generate the spreadsheet.' });
+  }
+});
+
+// Member: download their own progress as Excel.
+app.get('/api/my/export', authRequired, async (req, res) => {
+  const member = getUserById(req.user.id);
+  if (!member || !member.tier) return res.status(400).json({ error: 'You are not assigned to a challenge yet.' });
+  try {
+    const wb = await buildMemberWorkbook(member);
+    await sendWorkbook(res, wb, 'BMP_' + safeName(member.name) + '_progress.xlsx');
+  } catch (e) {
+    res.status(500).json({ error: 'Could not generate the spreadsheet.' });
+  }
+});
+
+// ===========================================================================
+// ADMIN (VPMD) — manage challenge items (requirements)
+// ===========================================================================
+app.get('/api/admin/requirements', authRequired, adminRequired, (req, res) => {
+  const requirements = db.prepare('SELECT * FROM requirements ORDER BY tier, kind, sort_order, id').all();
+  res.json({ requirements, tiers: TIERS });
+});
+
+app.post('/api/admin/requirements', authRequired, adminRequired, (req, res) => {
+  const b = req.body || {};
+  const tier = b.tier;
+  if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a valid challenge (Sigma, Phi, or Epsilon).' });
+  const title = String(b.title || '').trim();
+  if (!title) return res.status(400).json({ error: 'A title is required.' });
+  const isMeeting = b.kind === 'meeting';
+  const kind = isMeeting ? 'meeting' : (tier === 'sigma' ? 'checklist' : 'activity');
+  const category = isMeeting ? 'Meetings' : (String(b.category || '').trim() || 'General');
+  const description = String(b.description || '').trim() || null;
+  const mandatory = b.mandatory ? 1 : 0;
+  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM requirements WHERE tier=? AND kind=?').get(tier, kind).m;
+  const info = db.prepare(
+    'INSERT INTO requirements (tier, kind, category, title, description, sort_order, mandatory, active) VALUES (?,?,?,?,?,?,?,1)'
+  ).run(tier, kind, category, title, description, maxOrder + 1, mandatory);
+  res.json({ requirement: db.prepare('SELECT * FROM requirements WHERE id=?').get(info.lastInsertRowid) });
+});
+
+app.patch('/api/admin/requirements/:id', authRequired, adminRequired, (req, res) => {
+  const r = db.prepare('SELECT * FROM requirements WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Item not found.' });
+  const b = req.body || {};
+  const title = b.title !== undefined ? String(b.title).trim() : r.title;
+  if (!title) return res.status(400).json({ error: 'A title is required.' });
+  const category = b.category !== undefined ? (String(b.category).trim() || r.category) : r.category;
+  const description = b.description !== undefined ? (String(b.description).trim() || null) : r.description;
+  const mandatory = b.mandatory !== undefined ? (b.mandatory ? 1 : 0) : r.mandatory;
+  const active = b.active !== undefined ? (b.active ? 1 : 0) : r.active;
+  db.prepare('UPDATE requirements SET title=?, category=?, description=?, mandatory=?, active=? WHERE id=?')
+    .run(title, category, description, mandatory, active, r.id);
+  res.json({ requirement: db.prepare('SELECT * FROM requirements WHERE id=?').get(r.id) });
+});
+
+// "Remove" = hide it (active=0). History is preserved; restore via PATCH active:1.
+app.delete('/api/admin/requirements/:id', authRequired, adminRequired, (req, res) => {
+  const r = db.prepare('SELECT id FROM requirements WHERE id=?').get(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Item not found.' });
+  db.prepare('UPDATE requirements SET active=0 WHERE id=?').run(r.id);
+  res.json({ ok: true });
 });
 
 // ===========================================================================
