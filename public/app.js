@@ -80,8 +80,8 @@ function renderAuth() {
               <input name="name" autocomplete="name" placeholder="First Last" required />
             </div>`}
           <div class="field">
-            <label>Email</label>
-            <input name="email" type="email" autocomplete="email" placeholder="you@fiu.edu" required />
+            <label>Username</label>
+            <input name="username" type="text" autocomplete="username" placeholder="Your username" required />
           </div>
           <div class="field">
             <label>Password</label>
