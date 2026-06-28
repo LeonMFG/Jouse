@@ -11,7 +11,7 @@ export const TIERS = {
     duration: '6–8 weeks',
     // Sigma is a checklist program: complete every meeting + every checklist item.
     rules: { meetingsRequired: 8, meetingsTotal: 8, activitiesMode: 'all', minPerCategory: 0, activitiesRequired: null },
-    color: '#7b1d2b',
+    color: '#081e3f',
   },
   phi: {
     key: 'phi',
@@ -19,7 +19,7 @@ export const TIERS = {
     blurb: 'Continue growing as a balanced man, leader, and student (24–52 weeks). Attend the meetings and complete 20 activities.',
     duration: '24–52 weeks',
     rules: { meetingsRequired: 5, meetingsTotal: 6, activitiesMode: 'choose', minPerCategory: 3, activitiesRequired: 20 },
-    color: '#7b1d2b',
+    color: '#081e3f',
   },
   epsilon: {
     key: 'epsilon',
@@ -27,7 +27,7 @@ export const TIERS = {
     blurb: 'The upperclassman phase (12–18 months). Mentor younger members and prepare for life after college.',
     duration: '12–18 months',
     rules: { meetingsRequired: 5, meetingsTotal: 7, activitiesMode: 'choose', minPerCategory: 3, activitiesRequired: 20 },
-    color: '#7b1d2b',
+    color: '#081e3f',
   },
 };
 

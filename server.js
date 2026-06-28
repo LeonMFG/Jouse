@@ -446,6 +446,45 @@ app.post('/api/admin/users/:id/reset-password', authRequired, adminRequired, (re
 });
 
 // ===========================================================================
+// EVENT REQUESTS — members suggest events the chapter could host
+// ===========================================================================
+app.get('/api/events', authRequired, (req, res) => {
+  const events = db.prepare(`
+    SELECT e.*, u.name AS submitter_name, u.tier AS submitter_tier
+    FROM event_requests e JOIN users u ON u.id = e.user_id
+    ORDER BY (e.status = 'open') DESC, e.created_at DESC
+  `).all();
+  res.json({ events });
+});
+
+app.post('/api/events', authRequired, approvedMember, (req, res) => {
+  const title = String(req.body.title || '').trim();
+  const details = String(req.body.details || '').trim() || null;
+  if (!title) return res.status(400).json({ error: 'Please add a short title for your event idea.' });
+  const info = db.prepare('INSERT INTO event_requests (user_id, title, details) VALUES (?, ?, ?)')
+    .run(req.user.id, title, details);
+  res.json({ event: db.prepare('SELECT * FROM event_requests WHERE id=?').get(info.lastInsertRowid) });
+});
+
+app.delete('/api/events/:id', authRequired, (req, res) => {
+  const e = db.prepare('SELECT * FROM event_requests WHERE id=?').get(req.params.id);
+  if (!e) return res.status(404).json({ error: 'Request not found.' });
+  const isStaff = req.user.role === 'admin' || req.user.role === 'coordinator';
+  if (e.user_id !== req.user.id && !isStaff) return res.status(403).json({ error: 'You can only remove your own request.' });
+  db.prepare('DELETE FROM event_requests WHERE id=?').run(e.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/events/:id/status', authRequired, staffRequired, (req, res) => {
+  const status = req.body.status;
+  if (!['open', 'planned', 'declined'].includes(status)) return res.status(400).json({ error: 'Invalid status.' });
+  const e = db.prepare('SELECT id FROM event_requests WHERE id=?').get(req.params.id);
+  if (!e) return res.status(404).json({ error: 'Request not found.' });
+  db.prepare('UPDATE event_requests SET status=? WHERE id=?').run(status, e.id);
+  res.json({ ok: true });
+});
+
+// ===========================================================================
 // ADMIN — create accounts & delete accounts (and staff delete members)
 // ===========================================================================
 
@@ -548,7 +587,7 @@ async function buildMemberWorkbook(member) {
   ws.getRow(6).font = { bold: true };
   const headerRow = ws.getRow(8); // table header after the inserted block
   headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF7B1D2B' } };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF081E3F' } };
 
   const fmtDate = (val) => {
     if (!val) return '';

@@ -52,6 +52,15 @@ CREATE TABLE IF NOT EXISTS submissions (
   UNIQUE(user_id, requirement_id)
 );
 
+CREATE TABLE IF NOT EXISTS event_requests (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title       TEXT NOT NULL,
+  details     TEXT,
+  status      TEXT NOT NULL DEFAULT 'open',    -- open | planned | declined
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_sub_user ON submissions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sub_status ON submissions(status);
 CREATE INDEX IF NOT EXISTS idx_req_tier ON requirements(tier);
