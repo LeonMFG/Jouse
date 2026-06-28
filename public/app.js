@@ -139,8 +139,9 @@ function renderShell(content) {
   if (isStaff()) {
     tabs = [['queue', 'Review Queue'], ['roster', 'My Members'], ['pending', 'Pending']];
     if (u.role === 'admin') { tabs.push(['roles', 'Manage Roles']); tabs.push(['challenges', 'Challenges']); }
+    tabs.push(['events', 'Event Requests']);
   } else {
-    tabs = [['dashboard', 'My Challenge']];
+    tabs = [['dashboard', 'My Challenge'], ['events', 'Event Requests']];
   }
   App.innerHTML = `
     <div class="shell">
@@ -267,6 +268,7 @@ function render() {
   else if (state.view === 'pending') renderPending();
   else if (state.view === 'roles') renderRoles();
   else if (state.view === 'challenges') renderChallenges();
+  else if (state.view === 'events') renderEvents();
   else if (state.view === 'member') renderMemberDetail();
 }
 
@@ -719,7 +721,7 @@ async function renderRoles() {
     return `
       <div class="roster-row" style="cursor:default;grid-template-columns:1fr auto auto auto auto auto" data-row="${u.id}">
         <div>
-          <div class="name">${esc(u.name)} ${badge} ${isSelf ? '<span class="tier-chip" style="background:#efeaf4">you</span>' : ''}</div>
+          <div class="name">${esc(u.name)} ${badge} ${isSelf ? '<span class="tier-chip" style="background:#e7eef7">you</span>' : ''}</div>
           <div class="email">${esc(u.email)}${u.status === 'pending' ? ' · <b style="color:var(--amber)">pending</b>' : ''}</div>
         </div>
         <select class="role-sel" data-role="${u.id}">${roleOpts(u.role)}</select>
@@ -1083,6 +1085,69 @@ function openCreateAccountModal() {
       close(); toast('Account created', 'ok'); renderRoles();
     } catch (e) { err(e.message); btn.disabled = false; btn.textContent = 'Create account'; }
   });
+}
+
+
+// ===========================================================================
+// EVENT REQUESTS (members + staff)
+// ===========================================================================
+async function renderEvents() {
+  let data;
+  try { data = await api('/events'); } catch (e) { return showError(e); }
+  const staff = isStaff();
+  const me = state.user.id;
+  const labels = { open: 'Open', planned: 'Planned', declined: 'Declined' };
+  const pillClass = { open: 'pending', planned: 'approved', declined: 'denied' };
+
+  const cards = data.events.map((e) => `
+    <div class="card queue-card">
+      <div class="qhead">
+        <div>
+          <div class="title" style="font-weight:600;font-size:15px">${esc(e.title)}</div>
+          <div class="desc" style="color:var(--muted);font-size:12.5px">Suggested by ${esc(e.submitter_name)}${e.submitter_tier ? ' · ' + esc(e.submitter_tier) : ''} · ${fmtDate(e.created_at)}</div>
+        </div>
+        <span class="pill ${pillClass[e.status] || 'pending'}">${labels[e.status] || e.status}</span>
+      </div>
+      ${e.details ? `<div class="reflection">${esc(e.details)}</div>` : ''}
+      <div class="actions" style="margin-top:10px">
+        ${staff
+          ? `<button class="btn green sm" data-evtstatus="planned" data-evtid="${e.id}">Mark planned</button>
+             <button class="btn rose sm" data-evtstatus="declined" data-evtid="${e.id}">Decline</button>
+             <button class="btn ghost tiny" data-evtstatus="open" data-evtid="${e.id}">Reopen</button>
+             <button class="btn ghost tiny" data-evtdel="${e.id}">Delete</button>`
+          : (e.user_id === me ? `<button class="btn ghost tiny" data-evtdel="${e.id}">Withdraw</button>` : '')}
+      </div>
+    </div>`).join('');
+
+  setView(`
+    <h2 class="section-title">Event Requests</h2>
+    <p class="section-sub">Suggest events you'd like the chapter to host — and see what everyone else has proposed.</p>
+    <div class="card" style="margin-bottom:16px">
+      <div id="evt-error"></div>
+      <div class="field"><label>Event idea</label><input id="evt-title" placeholder="e.g. Resume workshop with alumni" /></div>
+      <div class="field"><label>Details (optional)</label><textarea id="evt-details" rows="3" placeholder="Why it'd be great, timing, who to invite…"></textarea></div>
+      <button class="btn" id="evt-submit">Submit request</button>
+    </div>
+    ${data.events.length ? cards : `<div class="empty"><div class="big">💡</div>No event requests yet — be the first to suggest one!</div>`}`);
+
+  document.getElementById('evt-submit').addEventListener('click', async () => {
+    const title = document.getElementById('evt-title').value.trim();
+    const details = document.getElementById('evt-details').value.trim();
+    const err = (m) => document.getElementById('evt-error').innerHTML = `<div class="error-banner">${esc(m)}</div>`;
+    if (!title) return err('Add a short title for your event idea.');
+    const btn = document.getElementById('evt-submit'); btn.disabled = true; btn.textContent = 'Submitting…';
+    try { await api('/events', { method: 'POST', body: { title, details } }); toast('Request submitted', 'ok'); renderEvents(); }
+    catch (e) { err(e.message); btn.disabled = false; btn.textContent = 'Submit request'; }
+  });
+  App.querySelectorAll('[data-evtdel]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Remove this event request?')) return;
+    try { await api(`/events/${b.dataset.evtdel}`, { method: 'DELETE' }); toast('Removed', 'ok'); renderEvents(); }
+    catch (e) { toast(e.message, 'err'); }
+  }));
+  App.querySelectorAll('[data-evtstatus]').forEach((b) => b.addEventListener('click', async () => {
+    try { await api(`/events/${b.dataset.evtid}/status`, { method: 'POST', body: { status: b.dataset.evtstatus } }); toast('Updated', 'ok'); renderEvents(); }
+    catch (e) { toast(e.message, 'err'); }
+  }));
 }
 
 
