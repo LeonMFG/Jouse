@@ -446,6 +446,59 @@ app.post('/api/admin/users/:id/reset-password', authRequired, adminRequired, (re
 });
 
 // ===========================================================================
+// ADMIN — create accounts & delete accounts (and staff delete members)
+// ===========================================================================
+
+// Admin creates a ready-to-use account (username + password) to hand out.
+app.post('/api/admin/users', authRequired, adminRequired, (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim();
+  const username = String(b.username || '').toLowerCase().trim();
+  const password = String(b.password || '');
+  const role = b.role;
+  let tier = b.tier || null;
+  if (!name) return res.status(400).json({ error: 'A full name is required.' });
+  if (!username) return res.status(400).json({ error: 'A username is required.' });
+  if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  if (!['member', 'coordinator', 'admin'].includes(role)) return res.status(400).json({ error: 'Please choose a valid role.' });
+  if (role === 'admin') tier = null;
+  else if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a challenge (Sigma, Phi, or Epsilon).' });
+  const existing = db.prepare('SELECT 1 FROM users WHERE email = ?').get(username);
+  if (existing) return res.status(409).json({ error: 'That username is already taken.' });
+  const info = db.prepare(`
+    INSERT INTO users (name, email, password_hash, role, tier, status, start_date)
+    VALUES (?, ?, ?, ?, ?, 'active', date('now'))
+  `).run(name, username, bcrypt.hashSync(password, 10), role, tier);
+  res.json({ user: getUserById(info.lastInsertRowid) });
+});
+
+// Admin deletes any account. Cannot delete your own, or the last remaining admin.
+app.delete('/api/admin/users/:id', authRequired, adminRequired, (req, res) => {
+  const target = db.prepare('SELECT id, role FROM users WHERE id=?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found.' });
+  if (target.id === req.user.id) return res.status(400).json({ error: 'You cannot delete your own account.' });
+  if (target.role === 'admin') {
+    const admins = db.prepare("SELECT COUNT(*) c FROM users WHERE role='admin'").get().c;
+    if (admins <= 1) return res.status(400).json({ error: 'There must always be at least one VPMD (admin).' });
+  }
+  const remove = db.transaction((id) => {
+    db.prepare('UPDATE submissions SET reviewed_by=NULL WHERE reviewed_by=?').run(id);
+    db.prepare('DELETE FROM users WHERE id=?').run(id);
+  });
+  remove(target.id);
+  res.json({ ok: true });
+});
+
+// Staff delete a member in their own challenge group.
+app.delete('/api/staff/members/:id', authRequired, staffRequired, (req, res) => {
+  const m = db.prepare("SELECT id, tier FROM users WHERE id=? AND role='member'").get(req.params.id);
+  if (!m) return res.status(404).json({ error: 'Member not found.' });
+  if (!tiersFor(req.user).includes(m.tier)) return res.status(403).json({ error: 'Not in your challenge group.' });
+  db.prepare('DELETE FROM users WHERE id=?').run(m.id);
+  res.json({ ok: true });
+});
+
+// ===========================================================================
 // Excel export of a member's progress
 // ===========================================================================
 function statusLabel(kind, status) {
