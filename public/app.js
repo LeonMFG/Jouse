@@ -139,9 +139,10 @@ function renderShell(content) {
   if (isStaff()) {
     tabs = [['queue', 'Review Queue'], ['roster', 'My Members'], ['pending', 'Pending']];
     if (u.role === 'admin') { tabs.push(['roles', 'Manage Roles']); tabs.push(['challenges', 'Challenges']); }
+    tabs.push(['leaderboard', 'Leaderboard']);
     tabs.push(['events', 'Event Requests']);
   } else {
-    tabs = [['dashboard', 'My Challenge'], ['events', 'Event Requests']];
+    tabs = [['dashboard', 'My Challenge'], ['leaderboard', 'Leaderboard'], ['events', 'Event Requests']];
   }
   App.innerHTML = `
     <div class="shell">
@@ -269,6 +270,7 @@ function render() {
   else if (state.view === 'roles') renderRoles();
   else if (state.view === 'challenges') renderChallenges();
   else if (state.view === 'events') renderEvents();
+  else if (state.view === 'leaderboard') renderLeaderboard();
   else if (state.view === 'member') renderMemberDetail();
 }
 
@@ -339,6 +341,7 @@ async function renderDashboard() {
 
   const pct = Math.min(100, Math.round((p.activitiesDone / Math.max(1, p.target)) * 100));
   const mPct = Math.min(100, Math.round((p.meetingsDone / Math.max(1, rules.meetingsRequired)) * 100));
+  const totalPoints = data.items.reduce((acc, it) => acc + ((it.submission && it.submission.status === 'approved') ? (it.points || 0) : 0), 0);
 
   const hero = `
     <div class="hero">
@@ -348,6 +351,7 @@ async function renderDashboard() {
         <div class="stat"><b>${p.meetingsDone}/${rules.meetingsRequired}</b><span>Meetings</span></div>
         <div class="stat"><b>${p.activitiesDone}/${p.target}</b><span>${rules.activitiesMode === 'all' ? 'Checklist' : 'Activities'}</span></div>
         <div class="stat"><b>${info.duration}</b><span>Timeframe</span></div>
+        <div class="stat"><b>${totalPoints}</b><span>Points</span></div>
       </div>
       ${p.complete ? `<div class="complete-pill">✓ All requirements complete — congratulations!</div>` : ''}
     </div>`;
@@ -435,7 +439,7 @@ function renderReq(it, staff) {
     <div class="req">
       <div class="status-dot ${dot}"></div>
       <div class="body">
-        <div class="title">${esc(it.title)}${it.mandatory ? '<span class="mand">Mandatory</span>' : ''}</div>
+        <div class="title">${esc(it.title)}${it.mandatory ? '<span class="mand">Mandatory</span>' : ''}${it.points ? `<span class="pts">+${it.points} pts</span>` : ''}</div>
         ${it.description ? `<div class="desc">${esc(it.description)}</div>` : ''}
         ${reflection}
         ${note}
@@ -798,6 +802,7 @@ async function renderMemberDetail() {
   const p = progressOf(data.items, rules);
   const aPct = Math.min(100, Math.round(p.activitiesDone / Math.max(1, p.target) * 100));
   const mPct = Math.min(100, Math.round(p.meetingsDone / Math.max(1, rules.meetingsRequired) * 100));
+  const mdPoints = data.items.reduce((acc, it) => acc + ((it.submission && it.submission.status === 'approved') ? (it.points || 0) : 0), 0);
 
   const hero = `
     <div class="hero">
@@ -807,6 +812,7 @@ async function renderMemberDetail() {
         <div class="stat"><b>${p.meetingsDone}/${rules.meetingsRequired}</b><span>Meetings</span></div>
         <div class="stat"><b>${p.activitiesDone}/${p.target}</b><span>${rules.activitiesMode === 'all' ? 'Checklist' : 'Activities'}</span></div>
         ${p.mandatory.length ? `<div class="stat"><b>${p.mandatoryDone}/${p.mandatory.length}</b><span>Mandatory</span></div>` : ''}
+        <div class="stat"><b>${mdPoints}</b><span>Points</span></div>
       </div>
     </div>
     <div class="summary-grid">
@@ -990,6 +996,10 @@ function openItemModal(tier, existing, data) {
             <label>Description (optional)</label>
             <textarea id="ci-desc" rows="3" placeholder="Extra detail shown under the title">${esc(existing && existing.description ? existing.description : '')}</textarea>
           </div>
+          <div class="field">
+            <label>Points (harder tasks earn more)</label>
+            <input id="ci-points" type="number" min="0" placeholder="e.g. 15" value="${existing ? existing.points : ''}" />
+          </div>
           <label style="display:flex;align-items:center;gap:8px;font-size:14px"><input type="checkbox" id="ci-mand" ${existing && existing.mandatory ? 'checked' : ''}/> Mandatory item</label>
         </div>
         <div class="modal-foot">
@@ -1011,17 +1021,18 @@ function openItemModal(tier, existing, data) {
     const title = document.getElementById('ci-title').value.trim();
     const description = document.getElementById('ci-desc').value.trim();
     const mandatory = document.getElementById('ci-mand').checked;
+    const points = document.getElementById('ci-points').value;
     const err = (m) => document.getElementById('ci-error').innerHTML = `<div class="error-banner">${esc(m)}</div>`;
     if (!title) return err('Please enter a title.');
     const btn = document.getElementById('ci-save'); btn.disabled = true; btn.textContent = 'Saving…';
     try {
       if (isEdit) {
         const category = isMeeting ? 'Meetings' : (document.getElementById('ci-category').value.trim() || 'General');
-        await api(`/admin/requirements/${existing.id}`, { method: 'PATCH', body: { title, description, mandatory, category } });
+        await api(`/admin/requirements/${existing.id}`, { method: 'PATCH', body: { title, description, mandatory, category, points } });
       } else {
         const kind = kindSel.value;
         const category = kind === 'meeting' ? 'Meetings' : (document.getElementById('ci-category').value.trim() || 'General');
-        await api('/admin/requirements', { method: 'POST', body: { tier, kind, category, title, description, mandatory } });
+        await api('/admin/requirements', { method: 'POST', body: { tier, kind, category, title, description, mandatory, points } });
       }
       close(); toast('Saved', 'ok'); renderChallenges();
     } catch (e) { err(e.message); btn.disabled = false; btn.textContent = isEdit ? 'Save changes' : 'Add item'; }
@@ -1148,6 +1159,34 @@ async function renderEvents() {
     try { await api(`/events/${b.dataset.evtid}/status`, { method: 'POST', body: { status: b.dataset.evtstatus } }); toast('Updated', 'ok'); renderEvents(); }
     catch (e) { toast(e.message, 'err'); }
   }));
+}
+
+
+// ===========================================================================
+// LEADERBOARD
+// ===========================================================================
+async function renderLeaderboard() {
+  const tier = state.lbTier || 'all';
+  let data;
+  try { data = await api('/leaderboard' + (tier !== 'all' ? '?tier=' + tier : '')); } catch (e) { return showError(e); }
+  const me = state.user.id;
+  const medal = (i) => i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : ('#' + (i + 1));
+  const rows = data.leaderboard.map((m, i) => `
+    <div class="lb-row ${m.id === me ? 'me' : ''}">
+      <div class="lb-rank">${medal(i)}</div>
+      <div class="lb-name">
+        <b>${esc(m.name)}</b>${m.id === me ? ' <span class="tier-chip" style="background:#eaf0f8">you</span>' : ''}
+        <div class="lb-sub">${esc(m.tier || '')} · ${m.meetings} meeting${m.meetings === 1 ? '' : 's'} · ${m.activities} activit${m.activities === 1 ? 'y' : 'ies'}</div>
+      </div>
+      <div class="lb-pts">${m.points}<span>pts</span></div>
+    </div>`).join('');
+  const filters = [['all', 'All'], ['sigma', 'Sigma'], ['phi', 'Phi'], ['epsilon', 'Epsilon']];
+  setView(`
+    <h2 class="section-title">Leaderboard 🏆</h2>
+    <p class="section-sub">Earn points by attending meetings and completing challenges — tougher tasks are worth more. Climb the ranks!</p>
+    <div class="tabs">${filters.map(([k, l]) => `<button class="tab ${tier === k ? 'active' : ''}" data-lbtier="${k}">${l}</button>`).join('')}</div>
+    ${data.leaderboard.length ? `<div class="lb">${rows}</div>` : `<div class="empty"><div class="big">🏆</div>No points on the board yet — get out there and earn some!</div>`}`);
+  App.querySelectorAll('[data-lbtier]').forEach((b) => b.addEventListener('click', () => { state.lbTier = b.dataset.lbtier; renderLeaderboard(); }));
 }
 
 
