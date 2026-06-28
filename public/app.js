@@ -717,7 +717,7 @@ async function renderRoles() {
     const badge = u.role === 'admin' ? '<span class="tier-chip" style="background:var(--red);color:#fff">VPMD</span>'
       : u.role === 'coordinator' ? `<span class="tier-chip">${u.tier} coord.</span>` : '';
     return `
-      <div class="roster-row" style="cursor:default;grid-template-columns:1fr auto auto auto auto" data-row="${u.id}">
+      <div class="roster-row" style="cursor:default;grid-template-columns:1fr auto auto auto auto auto" data-row="${u.id}">
         <div>
           <div class="name">${esc(u.name)} ${badge} ${isSelf ? '<span class="tier-chip" style="background:#efeaf4">you</span>' : ''}</div>
           <div class="email">${esc(u.email)}${u.status === 'pending' ? ' · <b style="color:var(--amber)">pending</b>' : ''}</div>
@@ -726,10 +726,11 @@ async function renderRoles() {
         <select class="tier-sel" data-tier="${u.id}" ${u.role === 'admin' ? 'style="visibility:hidden"' : ''}>${tierOpts(u.tier)}</select>
         <button class="btn sm" data-save="${u.id}" data-name="${esc(u.name)}" data-self="${isSelf ? 1 : 0}" data-was="${u.role}">Save</button>
         <button class="btn ghost sm" data-resetpw="${u.id}" data-name="${esc(u.name)}" ${isSelf ? 'style="visibility:hidden"' : ''}>Reset PW</button>
+        <button class="btn rose sm" data-del="${u.id}" data-name="${esc(u.name)}" ${isSelf ? 'style="visibility:hidden"' : ''}>Delete</button>
       </div>`;
   }).join('');
 
-  setView(`<h2 class="section-title">Manage Roles</h2>
+  setView(`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px"><h2 class="section-title" style="margin:0">Manage Roles</h2><button class="btn sm" id="create-acct">+ Create account</button></div>
     <p class="section-sub">Set who is the <b>VPMD (admin)</b> and who coordinates each challenge. Promoting someone to <b>Admin (VPMD)</b> gives them full chapter-wide access; a <b>Coordinator</b> manages just their own challenge (approving members, reviewing submissions, taking attendance). To hand off the VPMD, promote your successor to Admin first — then you can step yourself down.</p>
     <div class="roster">${rows}</div>`);
 
@@ -774,6 +775,13 @@ async function renderRoles() {
       showTempPassword(r.name, r.tempPassword);
     } catch (e) { toast(e.message, 'err'); }
   }));
+
+  document.getElementById('create-acct')?.addEventListener('click', openCreateAccountModal);
+  App.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm(`Delete ${b.dataset.name}'s account permanently?\n\nThis removes the account and everything they submitted. This cannot be undone.`)) return;
+    try { await api(`/admin/users/${b.dataset.del}`, { method: 'DELETE' }); toast('Account deleted', 'ok'); renderRoles(); }
+    catch (e) { toast(e.message, 'err'); }
+  }));
 }
 
 // ===========================================================================
@@ -810,12 +818,18 @@ async function renderMemberDetail() {
       <button class="back-link" id="back">← Back to my members</button>
       <button class="btn ghost sm" id="export-xls">⬇ Excel</button>
       <button class="btn ghost sm" id="reset-pw">Reset password</button>
+      <button class="btn rose sm" id="del-member">Delete member</button>
     </div>
     <p class="section-sub" style="margin:6px 0 14px">You can approve a submitted item, or mark anything complete directly (e.g. taking meeting attendance).</p>
     ${hero}${groups}`);
 
   document.getElementById('back').addEventListener('click', () => { state.view = 'roster'; render(); });
   document.getElementById('export-xls')?.addEventListener('click', () => { window.location.assign('/api/staff/members/' + m.id + '/export'); });
+  document.getElementById('del-member')?.addEventListener('click', async () => {
+    if (!confirm(`Delete ${m.name}'s account permanently?\n\nThis removes their account and everything they submitted. This cannot be undone.`)) return;
+    try { await api(`/staff/members/${m.id}`, { method: 'DELETE' }); toast('Member deleted', 'ok'); state.view = 'roster'; render(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
   document.getElementById('reset-pw').addEventListener('click', async () => {
     if (!confirm(`Reset ${m.name}'s password? Their current password stops working and you'll get a temporary one to give them.`)) return;
     try {
@@ -1011,5 +1025,65 @@ function openItemModal(tier, existing, data) {
     } catch (e) { err(e.message); btn.disabled = false; btn.textContent = isEdit ? 'Save changes' : 'Add item'; }
   });
 }
+
+function openCreateAccountModal() {
+  ModalRoot.innerHTML = `
+    <div class="modal-overlay" id="ca-overlay">
+      <div class="modal" style="max-width:480px">
+        <div class="modal-head">
+          <h3>Create an account</h3>
+          <p>Set a username and password, then hand them to the person. They can change their password later from the <b>Account</b> button.</p>
+        </div>
+        <div class="modal-body">
+          <div id="ca-error"></div>
+          <div class="field"><label>Full name</label><input id="ca-name" autocomplete="off" placeholder="First Last" /></div>
+          <div class="field"><label>Username</label><input id="ca-username" autocomplete="off" placeholder="e.g. jsmith" /></div>
+          <div class="field"><label>Password</label><input id="ca-password" type="text" autocomplete="off" placeholder="At least 6 characters" /></div>
+          <div class="field"><label>Role</label>
+            <select id="ca-role">
+              <option value="member">Member</option>
+              <option value="coordinator">Coordinator</option>
+              <option value="admin">Admin (VPMD)</option>
+            </select>
+          </div>
+          <div class="field" id="ca-tier-field"><label>Challenge</label>
+            <select id="ca-tier">
+              <option value="sigma">Sigma</option>
+              <option value="phi">Phi</option>
+              <option value="epsilon">Epsilon</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost" id="ca-cancel">Cancel</button>
+          <button class="btn" id="ca-save">Create account</button>
+        </div>
+      </div>
+    </div>`;
+  const close = () => { ModalRoot.innerHTML = ''; };
+  document.getElementById('ca-cancel').addEventListener('click', close);
+  document.getElementById('ca-overlay').addEventListener('click', (e) => { if (e.target.id === 'ca-overlay') close(); });
+  const roleSel = document.getElementById('ca-role');
+  roleSel.addEventListener('change', () => {
+    document.getElementById('ca-tier-field').style.display = roleSel.value === 'admin' ? 'none' : '';
+  });
+  document.getElementById('ca-save').addEventListener('click', async () => {
+    const name = document.getElementById('ca-name').value.trim();
+    const username = document.getElementById('ca-username').value.trim();
+    const password = document.getElementById('ca-password').value;
+    const role = roleSel.value;
+    const tier = role === 'admin' ? null : document.getElementById('ca-tier').value;
+    const err = (m) => document.getElementById('ca-error').innerHTML = `<div class="error-banner">${esc(m)}</div>`;
+    if (!name) return err('Enter a full name.');
+    if (!username) return err('Enter a username.');
+    if (password.length < 6) return err('Password must be at least 6 characters.');
+    const btn = document.getElementById('ca-save'); btn.disabled = true; btn.textContent = 'Creating…';
+    try {
+      await api('/admin/users', { method: 'POST', body: { name, username, password, role, tier } });
+      close(); toast('Account created', 'ok'); renderRoles();
+    } catch (e) { err(e.message); btn.disabled = false; btn.textContent = 'Create account'; }
+  });
+}
+
 
 boot();
