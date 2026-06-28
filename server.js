@@ -101,18 +101,20 @@ function tiersFor(user) {
 // AUTH
 // ===========================================================================
 app.post('/api/auth/register', (req, res) => {
-  const { name, email, password, tier } = req.body || {};
-  if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required.' });
+  const { name, username, password, tier } = req.body || {};
+  if (!name || !username || !password) return res.status(400).json({ error: 'Name, username, and password are required.' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a valid challenge (Sigma, Phi, or Epsilon).' });
 
-  const existing = db.prepare('SELECT 1 FROM users WHERE email = ?').get(email.toLowerCase().trim());
-  if (existing) return res.status(409).json({ error: 'An account with that email already exists.' });
+  const uname = String(username).toLowerCase().trim();
+  if (!uname) return res.status(400).json({ error: 'Please choose a username.' });
+  const existing = db.prepare('SELECT 1 FROM users WHERE email = ?').get(uname);
+  if (existing) return res.status(409).json({ error: 'That username is already taken.' });
 
   const info = db.prepare(`
     INSERT INTO users (name, email, password_hash, role, tier, status, start_date)
     VALUES (?, ?, ?, 'member', ?, 'pending', date('now'))
-  `).run(name.trim(), email.toLowerCase().trim(), bcrypt.hashSync(password, 10), tier);
+  `).run(name.trim(), uname, bcrypt.hashSync(password, 10), tier);
 
   const user = getUserById(info.lastInsertRowid);
   setAuthCookie(res, signToken(user));
@@ -120,11 +122,11 @@ app.post('/api/auth/register', (req, res) => {
 });
 
 app.post('/api/auth/login', (req, res) => {
-  const { email, password } = req.body || {};
-  if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
-  const row = db.prepare('SELECT * FROM users WHERE email = ?').get(String(email).toLowerCase().trim());
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'Username and password are required.' });
+  const row = db.prepare('SELECT * FROM users WHERE email = ?').get(String(username).toLowerCase().trim());
   if (!row || !bcrypt.compareSync(password, row.password_hash))
-    return res.status(401).json({ error: 'Incorrect email or password.' });
+    return res.status(401).json({ error: 'Incorrect username or password.' });
   const user = getUserById(row.id);
   setAuthCookie(res, signToken(user));
   res.json({ user });
@@ -480,7 +482,7 @@ async function buildMemberWorkbook(member) {
   ws.spliceRows(1, 0,
     ['Balanced Man Program — ' + (info.name || member.tier) + ' Progress'],
     ['Brother: ' + member.name],
-    ['Email: ' + member.email],
+    ['Username: ' + member.email],
     ['Challenge: ' + (info.name || member.tier)],
     ['Exported: ' + new Date().toLocaleString()],
     ['Meetings ' + summary.meetings.done + '/' + summary.meetings.required +
