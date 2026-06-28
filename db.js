@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS requirements (
   description TEXT,
   sort_order  INTEGER NOT NULL DEFAULT 0,
   mandatory   INTEGER NOT NULL DEFAULT 0,
-  active      INTEGER NOT NULL DEFAULT 1
+  active      INTEGER NOT NULL DEFAULT 1,
+  points      INTEGER NOT NULL DEFAULT 10
 );
 
 CREATE TABLE IF NOT EXISTS submissions (
@@ -71,6 +72,13 @@ const userCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name)
 if (!userCols.includes('status')) {
   // Existing accounts predate approvals, so treat them as already active.
   db.exec("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+}
+
+// Points for gamification (older requirement rows predate this column).
+const reqCols = db.prepare('PRAGMA table_info(requirements)').all().map((c) => c.name);
+if (!reqCols.includes('points')) {
+  db.exec("ALTER TABLE requirements ADD COLUMN points INTEGER NOT NULL DEFAULT 10");
+  db.exec("UPDATE requirements SET points = CASE WHEN kind='meeting' THEN 10 WHEN mandatory=1 THEN 25 ELSE 15 END");
 }
 
 export default db;

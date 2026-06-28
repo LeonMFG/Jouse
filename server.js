@@ -446,6 +446,28 @@ app.post('/api/admin/users/:id/reset-password', authRequired, adminRequired, (re
 });
 
 // ===========================================================================
+// LEADERBOARD — points from approved meetings & activities
+// ===========================================================================
+app.get('/api/leaderboard', authRequired, (req, res) => {
+  const tier = req.query.tier;
+  const filter = (tier && TIERS[tier]) ? ' AND u.tier = ?' : '';
+  const params = (tier && TIERS[tier]) ? [tier] : [];
+  const leaderboard = db.prepare(`
+    SELECT u.id, u.name, u.tier,
+      COALESCE(SUM(CASE WHEN s.status='approved' AND r.active=1 THEN r.points ELSE 0 END), 0) AS points,
+      COALESCE(SUM(CASE WHEN s.status='approved' AND r.active=1 AND r.kind='meeting' THEN 1 ELSE 0 END), 0) AS meetings,
+      COALESCE(SUM(CASE WHEN s.status='approved' AND r.active=1 AND r.kind!='meeting' THEN 1 ELSE 0 END), 0) AS activities
+    FROM users u
+    LEFT JOIN submissions s ON s.user_id = u.id
+    LEFT JOIN requirements r ON r.id = s.requirement_id
+    WHERE u.role='member' AND u.status='active'${filter}
+    GROUP BY u.id
+    ORDER BY points DESC, u.name ASC
+  `).all(...params);
+  res.json({ leaderboard });
+});
+
+// ===========================================================================
 // EVENT REQUESTS — members suggest events the chapter could host
 // ===========================================================================
 app.get('/api/events', authRequired, (req, res) => {
@@ -553,6 +575,7 @@ async function buildMemberWorkbook(member) {
   const subs = db.prepare('SELECT * FROM submissions WHERE user_id = ?').all(member.id);
   const byReq = new Map(subs.map((s) => [s.requirement_id, s]));
   const summary = summarize(member.id, member.tier);
+  const earnedPoints = reqs.reduce((acc, r) => { const sub = byReq.get(r.id); return acc + (sub && sub.status === 'approved' ? (r.points || 0) : 0); }, 0);
 
   const wb = new ExcelJS.Workbook();
   wb.creator = 'FIU SigEp BMP Tracker';
@@ -563,6 +586,7 @@ async function buildMemberWorkbook(member) {
     { header: 'Type', key: 'kind', width: 12 },
     { header: 'Item', key: 'title', width: 60 },
     { header: 'Mandatory', key: 'mandatory', width: 11 },
+    { header: 'Points', key: 'points', width: 8 },
     { header: 'Status', key: 'status', width: 15 },
     { header: 'Reflection', key: 'reflection', width: 50 },
     { header: 'Coordinator note', key: 'note', width: 30 },
@@ -580,7 +604,7 @@ async function buildMemberWorkbook(member) {
     ['Meetings ' + summary.meetings.done + '/' + summary.meetings.required +
      '    Activities ' + summary.activities.done + '/' + summary.activities.target +
      '    Mandatory ' + summary.mandatory.done + '/' + summary.mandatory.total +
-     '    Complete: ' + (summary.complete ? 'YES' : 'No')],
+     '    Complete: ' + (summary.complete ? 'YES' : 'No') + '    Points ' + earnedPoints],
     [],
   );
   ws.getRow(1).font = { bold: true, size: 14 };
@@ -604,6 +628,7 @@ async function buildMemberWorkbook(member) {
       kind: r.kind === 'meeting' ? 'Meeting' : 'Activity',
       title: r.title,
       mandatory: r.mandatory ? 'Yes' : '',
+      points: r.points,
       status: statusLabel(r.kind, status),
       reflection: sub && sub.reflection ? sub.reflection : '',
       note: sub && sub.review_note ? sub.review_note : '',
@@ -671,10 +696,12 @@ app.post('/api/admin/requirements', authRequired, adminRequired, (req, res) => {
   const category = isMeeting ? 'Meetings' : (String(b.category || '').trim() || 'General');
   const description = String(b.description || '').trim() || null;
   const mandatory = b.mandatory ? 1 : 0;
+  let points = parseInt(b.points, 10);
+  if (!Number.isFinite(points) || points < 0) points = isMeeting ? 10 : (mandatory ? 25 : 15);
   const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM requirements WHERE tier=? AND kind=?').get(tier, kind).m;
   const info = db.prepare(
-    'INSERT INTO requirements (tier, kind, category, title, description, sort_order, mandatory, active) VALUES (?,?,?,?,?,?,?,1)'
-  ).run(tier, kind, category, title, description, maxOrder + 1, mandatory);
+    'INSERT INTO requirements (tier, kind, category, title, description, sort_order, mandatory, active, points) VALUES (?,?,?,?,?,?,?,1,?)'
+  ).run(tier, kind, category, title, description, maxOrder + 1, mandatory, points);
   res.json({ requirement: db.prepare('SELECT * FROM requirements WHERE id=?').get(info.lastInsertRowid) });
 });
 
@@ -688,8 +715,9 @@ app.patch('/api/admin/requirements/:id', authRequired, adminRequired, (req, res)
   const description = b.description !== undefined ? (String(b.description).trim() || null) : r.description;
   const mandatory = b.mandatory !== undefined ? (b.mandatory ? 1 : 0) : r.mandatory;
   const active = b.active !== undefined ? (b.active ? 1 : 0) : r.active;
-  db.prepare('UPDATE requirements SET title=?, category=?, description=?, mandatory=?, active=? WHERE id=?')
-    .run(title, category, description, mandatory, active, r.id);
+  const points = (b.points !== undefined && b.points !== '' && b.points !== null) ? Math.max(0, parseInt(b.points, 10) || 0) : r.points;
+  db.prepare('UPDATE requirements SET title=?, category=?, description=?, mandatory=?, active=?, points=? WHERE id=?')
+    .run(title, category, description, mandatory, active, points, r.id);
   res.json({ requirement: db.prepare('SELECT * FROM requirements WHERE id=?').get(r.id) });
 });
 
