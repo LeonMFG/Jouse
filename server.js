@@ -177,6 +177,7 @@ app.get('/api/my/progress', authRequired, (req, res) => {
 app.post('/api/my/submissions', authRequired, approvedMember, upload.single('proof'), (req, res) => {
   const requirementId = Number(req.body.requirement_id);
   const reflection = (req.body.reflection || '').trim();
+  const shareToFeed = req.body.share === 'true' || req.body.share === true || req.body.share === 'on';
   const req0 = db.prepare('SELECT * FROM requirements WHERE id = ?').get(requirementId);
   if (!req0) return res.status(404).json({ error: 'Requirement not found.' });
   if (req0.tier !== req.user.tier) return res.status(403).json({ error: 'That requirement is not part of your challenge.' });
@@ -198,6 +199,7 @@ app.post('/api/my/submissions', authRequired, approvedMember, upload.single('pro
           reviewed_by=NULL, reviewed_at=NULL, review_note=NULL
       WHERE id=?
     `).run(reflection, proofPath, proofName, existing.id);
+    if (shareToFeed) db.prepare('INSERT INTO posts (user_id, body, context) VALUES (?, ?, ?)').run(req.user.id, reflection, req0.title);
     return res.json({ submission: db.prepare('SELECT * FROM submissions WHERE id = ?').get(existing.id) });
   }
 
@@ -205,6 +207,7 @@ app.post('/api/my/submissions', authRequired, approvedMember, upload.single('pro
     INSERT INTO submissions (user_id, requirement_id, status, reflection, proof_path, proof_name)
     VALUES (?, ?, 'pending', ?, ?, ?)
   `).run(req.user.id, requirementId, reflection, proofPath, proofName);
+  if (shareToFeed) db.prepare('INSERT INTO posts (user_id, body, context) VALUES (?, ?, ?)').run(req.user.id, reflection, req0.title);
   res.json({ submission: db.prepare('SELECT * FROM submissions WHERE id = ?').get(info.lastInsertRowid) });
 });
 
@@ -443,6 +446,112 @@ app.post('/api/admin/users/:id/reset-password', authRequired, adminRequired, (re
   const tempPassword = genTempPassword();
   db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(bcrypt.hashSync(tempPassword, 10), u.id);
   res.json({ tempPassword, name: u.name });
+});
+
+// ===========================================================================
+// COMMUNITY — general chat + reflections feed (posts, comments, reactions)
+// ===========================================================================
+const REACTIONS = ['\u{1F44D}', '\u{1F525}', '\u{1F4AA}', '\u{1F389}', '❤️'];
+
+app.get('/api/messages', authRequired, (req, res) => {
+  const messages = db.prepare(`
+    SELECT m.id, m.user_id, m.body, m.created_at, u.name AS author_name, u.role AS author_role
+    FROM messages m JOIN users u ON u.id = m.user_id
+    ORDER BY m.id DESC LIMIT 200
+  `).all().reverse();
+  res.json({ messages });
+});
+
+app.post('/api/messages', authRequired, approvedMember, (req, res) => {
+  const body = String(req.body.body || '').trim();
+  if (!body) return res.status(400).json({ error: 'Message is empty.' });
+  if (body.length > 1000) return res.status(400).json({ error: 'Message is too long (max 1000 characters).' });
+  const info = db.prepare('INSERT INTO messages (user_id, body) VALUES (?, ?)').run(req.user.id, body);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.delete('/api/messages/:id', authRequired, (req, res) => {
+  const m = db.prepare('SELECT user_id FROM messages WHERE id=?').get(req.params.id);
+  if (!m) return res.status(404).json({ error: 'Message not found.' });
+  const staff = req.user.role === 'admin' || req.user.role === 'coordinator';
+  if (m.user_id !== req.user.id && !staff) return res.status(403).json({ error: 'You can only delete your own messages.' });
+  db.prepare('DELETE FROM messages WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+app.get('/api/posts', authRequired, (req, res) => {
+  const posts = db.prepare(`
+    SELECT p.id, p.user_id, p.body, p.context, p.created_at, u.name AS author_name, u.role AS author_role
+    FROM posts p JOIN users u ON u.id = p.user_id
+    ORDER BY p.created_at DESC, p.id DESC
+  `).all();
+  const comments = db.prepare(`
+    SELECT c.id, c.post_id, c.user_id, c.body, c.created_at, u.name AS author_name
+    FROM post_comments c JOIN users u ON u.id = c.user_id
+    ORDER BY c.created_at ASC, c.id ASC
+  `).all();
+  const reacts = db.prepare('SELECT post_id, emoji, user_id FROM post_reactions').all();
+  const cByPost = {};
+  for (const c of comments) (cByPost[c.post_id] ||= []).push(c);
+  const rByPost = {};
+  for (const r of reacts) {
+    (rByPost[r.post_id] ||= { counts: {}, mine: [] });
+    rByPost[r.post_id].counts[r.emoji] = (rByPost[r.post_id].counts[r.emoji] || 0) + 1;
+    if (r.user_id === req.user.id) rByPost[r.post_id].mine.push(r.emoji);
+  }
+  const out = posts.map((p) => ({
+    ...p,
+    comments: cByPost[p.id] || [],
+    reactions: (rByPost[p.id] && rByPost[p.id].counts) || {},
+    mine: (rByPost[p.id] && rByPost[p.id].mine) || [],
+  }));
+  res.json({ posts: out, reactionSet: REACTIONS });
+});
+
+app.post('/api/posts', authRequired, approvedMember, (req, res) => {
+  const body = String(req.body.body || '').trim();
+  const context = String(req.body.context || '').trim() || null;
+  if (!body) return res.status(400).json({ error: 'Write something to post.' });
+  const info = db.prepare('INSERT INTO posts (user_id, body, context) VALUES (?, ?, ?)').run(req.user.id, body, context);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.delete('/api/posts/:id', authRequired, (req, res) => {
+  const p = db.prepare('SELECT user_id FROM posts WHERE id=?').get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Post not found.' });
+  const staff = req.user.role === 'admin' || req.user.role === 'coordinator';
+  if (p.user_id !== req.user.id && !staff) return res.status(403).json({ error: 'You can only delete your own post.' });
+  db.prepare('DELETE FROM posts WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/posts/:id/comments', authRequired, approvedMember, (req, res) => {
+  const post = db.prepare('SELECT id FROM posts WHERE id=?').get(req.params.id);
+  if (!post) return res.status(404).json({ error: 'Post not found.' });
+  const body = String(req.body.body || '').trim();
+  if (!body) return res.status(400).json({ error: 'Comment is empty.' });
+  db.prepare('INSERT INTO post_comments (post_id, user_id, body) VALUES (?, ?, ?)').run(post.id, req.user.id, body);
+  res.json({ ok: true });
+});
+
+app.delete('/api/posts/:id/comments/:cid', authRequired, (req, res) => {
+  const c = db.prepare('SELECT user_id FROM post_comments WHERE id=? AND post_id=?').get(req.params.cid, req.params.id);
+  if (!c) return res.status(404).json({ error: 'Comment not found.' });
+  const staff = req.user.role === 'admin' || req.user.role === 'coordinator';
+  if (c.user_id !== req.user.id && !staff) return res.status(403).json({ error: 'You can only delete your own comment.' });
+  db.prepare('DELETE FROM post_comments WHERE id=?').run(req.params.cid);
+  res.json({ ok: true });
+});
+
+app.post('/api/posts/:id/react', authRequired, approvedMember, (req, res) => {
+  const emoji = String(req.body.emoji || '');
+  if (!REACTIONS.includes(emoji)) return res.status(400).json({ error: 'Invalid reaction.' });
+  const post = db.prepare('SELECT id FROM posts WHERE id=?').get(req.params.id);
+  if (!post) return res.status(404).json({ error: 'Post not found.' });
+  const existing = db.prepare('SELECT id FROM post_reactions WHERE post_id=? AND user_id=? AND emoji=?').get(post.id, req.user.id, emoji);
+  if (existing) db.prepare('DELETE FROM post_reactions WHERE id=?').run(existing.id);
+  else db.prepare('INSERT INTO post_reactions (post_id, user_id, emoji) VALUES (?, ?, ?)').run(post.id, req.user.id, emoji);
+  res.json({ ok: true });
 });
 
 // ===========================================================================
