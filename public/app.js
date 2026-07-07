@@ -69,7 +69,7 @@ function renderAuth() {
     <div class="auth-wrap">
       <div class="auth-card">
         <div class="brand">
-          <div class="crest">ΣΦΕ</div>
+          <img class="crest-hero" src="/crest.svg" alt="Sigma Phi Epsilon crest" />
           <h1>Balanced Man Program</h1>
           <p>FIU · Florida Nu — Sigma · Phi · Epsilon</p>
         </div>
@@ -149,7 +149,7 @@ function renderShell(content) {
   App.innerHTML = `
     <div class="shell">
       <div class="topbar">
-        <div class="logo"><span class="dot">ΣΦΕ</span> BMP Tracker</div>
+        <div class="logo"><img class="crest-mark" src="/crest.svg" alt="ΣΦΕ" /> BMP Tracker</div>
         <div class="spacer"></div>
         <div class="who"><b>${esc(u.name)}</b><span>${esc(u.role)}${u.tier ? ' · ' + u.tier : ''}</span></div>
         <button class="out" id="account">Account</button>
@@ -283,7 +283,7 @@ function renderWaiting() {
   App.innerHTML = `
     <div class="shell">
       <div class="topbar">
-        <div class="logo"><span class="dot">ΣΦΕ</span> BMP Tracker</div>
+        <div class="logo"><img class="crest-mark" src="/crest.svg" alt="ΣΦΕ" /> BMP Tracker</div>
         <div class="spacer"></div>
         <div class="who"><b>${esc(state.user.name)}</b><span>${esc(state.user.tier || '')}</span></div>
         <button class="out" id="account">Account</button>
