@@ -63,6 +63,7 @@ async function boot() {
 // AUTH SCREEN
 // ===========================================================================
 function renderAuth() {
+  if (state._poll) { clearInterval(state._poll); state._poll = null; }
   const login = state.authMode === 'login';
   App.innerHTML = `
     <div class="auth-wrap">
@@ -140,9 +141,10 @@ function renderShell(content) {
     tabs = [['queue', 'Review Queue'], ['roster', 'My Members'], ['pending', 'Pending']];
     if (u.role === 'admin') { tabs.push(['roles', 'Manage Roles']); tabs.push(['challenges', 'Challenges']); }
     tabs.push(['leaderboard', 'Leaderboard']);
+    tabs.push(['community', 'Community']);
     tabs.push(['events', 'Event Requests']);
   } else {
-    tabs = [['dashboard', 'My Challenge'], ['leaderboard', 'Leaderboard'], ['events', 'Event Requests']];
+    tabs = [['dashboard', 'My Challenge'], ['leaderboard', 'Leaderboard'], ['community', 'Community'], ['events', 'Event Requests']];
   }
   App.innerHTML = `
     <div class="shell">
@@ -259,6 +261,7 @@ function openPasswordModal() {
 // ROUTER
 // ===========================================================================
 function render() {
+  if (state._poll) { clearInterval(state._poll); state._poll = null; }
   if (!state.user) return renderAuth();
   // A brother who hasn't been approved yet only sees a waiting screen.
   if (state.user.role === 'member' && state.user.status === 'pending') return renderWaiting();
@@ -271,6 +274,7 @@ function render() {
   else if (state.view === 'challenges') renderChallenges();
   else if (state.view === 'events') renderEvents();
   else if (state.view === 'leaderboard') renderLeaderboard();
+  else if (state.view === 'community') renderCommunity();
   else if (state.view === 'member') renderMemberDetail();
 }
 
@@ -491,6 +495,10 @@ async function openSubmitModal(reqId) {
               <input type="file" id="proof" accept="image/*,application/pdf" hidden />
             </label>
           </div>
+          <label style="display:flex;align-items:flex-start;gap:8px;font-size:13.5px;cursor:pointer;margin-top:2px">
+            <input type="checkbox" id="share-feed" style="margin-top:3px" />
+            <span>Also share this reflection to the community feed so others can react and comment.</span>
+          </label>
         </div>
         <div class="modal-foot">
           <button class="btn ghost" id="cancel">Cancel</button>
@@ -528,6 +536,7 @@ async function openSubmitModal(reqId) {
     form.append('requirement_id', reqId);
     form.append('reflection', reflection);
     if (fileInput.files[0]) form.append('proof', fileInput.files[0]);
+    if (document.getElementById('share-feed') && document.getElementById('share-feed').checked) form.append('share', 'true');
     try {
       await api('/my/submissions', { method: 'POST', form });
       close(); toast('Submitted for review', 'ok'); renderDashboard();
@@ -1187,6 +1196,154 @@ async function renderLeaderboard() {
     <div class="tabs">${filters.map(([k, l]) => `<button class="tab ${tier === k ? 'active' : ''}" data-lbtier="${k}">${l}</button>`).join('')}</div>
     ${data.leaderboard.length ? `<div class="lb">${rows}</div>` : `<div class="empty"><div class="big">🏆</div>No points on the board yet — get out there and earn some!</div>`}`);
   App.querySelectorAll('[data-lbtier]').forEach((b) => b.addEventListener('click', () => { state.lbTier = b.dataset.lbtier; renderLeaderboard(); }));
+}
+
+
+// ===========================================================================
+// COMMUNITY (chat + reflections feed)
+// ===========================================================================
+function fmtTime(s) {
+  if (!s) return '';
+  const d = new Date(String(s).replace(' ', 'T') + (String(s).includes('T') ? '' : 'Z'));
+  if (isNaN(d)) return s;
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function renderCommunity() {
+  if (state._poll) { clearInterval(state._poll); state._poll = null; }
+  const sub = state.commTab || 'chat';
+  setView(`
+    <h2 class="section-title">Community</h2>
+    <p class="section-sub">Hang out in the chapter chat, or share a reflection to the feed for others to react and comment on.</p>
+    <div class="tabs">
+      <button class="tab ${sub === 'chat' ? 'active' : ''}" data-commtab="chat">💬 Chat</button>
+      <button class="tab ${sub === 'feed' ? 'active' : ''}" data-commtab="feed">📝 Feed</button>
+    </div>
+    <div id="comm-body"><div class="skeleton">Loading…</div></div>`);
+  App.querySelectorAll('[data-commtab]').forEach((b) => b.addEventListener('click', () => { state.commTab = b.dataset.commtab; renderCommunity(); }));
+  if (sub === 'chat') renderChat(); else renderFeed();
+}
+
+function renderChat() {
+  const body = document.getElementById('comm-body');
+  if (!body) return;
+  body.innerHTML = `
+    <div class="chat">
+      <div class="chat-list" id="chat-list"><div class="skeleton">Loading…</div></div>
+      <div class="chat-input">
+        <input id="chat-text" placeholder="Message the chapter…" maxlength="1000" autocomplete="off" />
+        <button class="btn" id="chat-send">Send</button>
+      </div>
+    </div>`;
+  const send = async () => {
+    const input = document.getElementById('chat-text');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    try { await api('/messages', { method: 'POST', body: { body: text } }); await loadMessages(true); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  document.getElementById('chat-send').addEventListener('click', send);
+  document.getElementById('chat-text').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } });
+  loadMessages(true);
+  state._poll = setInterval(() => loadMessages(false), 7000);
+}
+
+async function loadMessages(forceScroll) {
+  let list = document.getElementById('chat-list');
+  if (!list) return;
+  let data;
+  try { data = await api('/messages'); } catch { return; }
+  list = document.getElementById('chat-list');
+  if (!list) return;
+  const me = state.user.id;
+  const staff = isStaff();
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 90;
+  list.innerHTML = data.messages.length ? data.messages.map((m) => `
+    <div class="msg ${m.user_id === me ? 'mine' : ''}">
+      <div class="msg-meta"><b>${esc(m.author_name)}</b>${m.author_role !== 'member' ? ` <span class="tier-chip" style="background:#eaf0f8">${esc(m.author_role)}</span>` : ''} <span class="msg-time">${fmtTime(m.created_at)}</span>${(m.user_id === me || staff) ? ` <a class="msg-del" data-msgdel="${m.id}">✕</a>` : ''}</div>
+      <div class="msg-body">${esc(m.body)}</div>
+    </div>`).join('') : `<div class="empty" style="padding:36px 0"><div class="big">💬</div>No messages yet — say hi!</div>`;
+  list.querySelectorAll('[data-msgdel]').forEach((b) => b.addEventListener('click', async () => {
+    try { await api(`/messages/${b.dataset.msgdel}`, { method: 'DELETE' }); loadMessages(false); } catch (e) { toast(e.message, 'err'); }
+  }));
+  if (forceScroll || nearBottom) list.scrollTop = list.scrollHeight;
+}
+
+function renderFeed() {
+  const body = document.getElementById('comm-body');
+  if (!body) return;
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:14px">
+      <div id="post-error"></div>
+      <div class="field" style="margin-bottom:8px"><textarea id="post-text" rows="3" placeholder="Share a reflection, a win, or a thought with the chapter…"></textarea></div>
+      <button class="btn" id="post-send">Post to feed</button>
+    </div>
+    <div id="feed-list"><div class="skeleton">Loading…</div></div>`;
+  document.getElementById('post-send').addEventListener('click', async () => {
+    const t = document.getElementById('post-text').value.trim();
+    if (!t) { document.getElementById('post-error').innerHTML = `<div class="error-banner">Write something first.</div>`; return; }
+    try { await api('/posts', { method: 'POST', body: { body: t } }); document.getElementById('post-text').value = ''; toast('Posted', 'ok'); loadFeed(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+  loadFeed();
+}
+
+async function loadFeed() {
+  let wrap = document.getElementById('feed-list');
+  if (!wrap) return;
+  let data;
+  try { data = await api('/posts'); } catch (e) { return showError(e); }
+  wrap = document.getElementById('feed-list');
+  if (!wrap) return;
+  const me = state.user.id;
+  const staff = isStaff();
+  const reactionSet = data.reactionSet || ['👍', '🔥', '💪', '🎉', '❤️'];
+  wrap.innerHTML = data.posts.length ? data.posts.map((p) => {
+    const reactBtns = reactionSet.map((em) => {
+      const count = p.reactions[em] || 0;
+      const on = p.mine.indexOf(em) !== -1;
+      return `<button class="react ${on ? 'on' : ''}" data-react="${em}" data-post="${p.id}">${em}${count ? ' ' + count : ''}</button>`;
+    }).join('');
+    const comments = p.comments.map((c) => `
+      <div class="comment">
+        <div><b>${esc(c.author_name)}</b> <span class="msg-time">${fmtTime(c.created_at)}</span>${(c.user_id === me || staff) ? ` <a class="msg-del" data-cdel="${c.id}" data-post="${p.id}">✕</a>` : ''}</div>
+        <div>${esc(c.body)}</div>
+      </div>`).join('');
+    return `
+      <div class="post card">
+        <div class="post-head">
+          <div><b>${esc(p.author_name)}</b>${p.author_role !== 'member' ? ` <span class="tier-chip" style="background:#eaf0f8">${esc(p.author_role)}</span>` : ''} <span class="msg-time">${fmtTime(p.created_at)}</span></div>
+          ${(p.user_id === me || staff) ? `<a class="msg-del" data-pdel="${p.id}">Delete</a>` : ''}
+        </div>
+        ${p.context ? `<div class="post-context">💭 Reflection on: ${esc(p.context)}</div>` : ''}
+        <div class="post-body">${esc(p.body)}</div>
+        <div class="reacts">${reactBtns}</div>
+        ${comments ? `<div class="comments">${comments}</div>` : ''}
+        <div class="add-comment">
+          <input class="cmt-input" data-cinput="${p.id}" placeholder="Add a comment…" autocomplete="off" />
+          <button class="btn ghost sm" data-cbtn="${p.id}">Reply</button>
+        </div>
+      </div>`;
+  }).join('') : `<div class="empty"><div class="big">📝</div>No posts yet — share the first reflection!</div>`;
+
+  wrap.querySelectorAll('[data-react]').forEach((b) => b.addEventListener('click', async () => {
+    try { await api(`/posts/${b.dataset.post}/react`, { method: 'POST', body: { emoji: b.dataset.react } }); loadFeed(); } catch (e) { toast(e.message, 'err'); }
+  }));
+  wrap.querySelectorAll('[data-pdel]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Delete this post?')) return;
+    try { await api(`/posts/${b.dataset.pdel}`, { method: 'DELETE' }); loadFeed(); } catch (e) { toast(e.message, 'err'); }
+  }));
+  wrap.querySelectorAll('[data-cdel]').forEach((b) => b.addEventListener('click', async () => {
+    try { await api(`/posts/${b.dataset.post}/comments/${b.dataset.cdel}`, { method: 'DELETE' }); loadFeed(); } catch (e) { toast(e.message, 'err'); }
+  }));
+  const submitComment = async (id, inp) => {
+    const t = inp.value.trim();
+    if (!t) return;
+    try { await api(`/posts/${id}/comments`, { method: 'POST', body: { body: t } }); loadFeed(); } catch (e) { toast(e.message, 'err'); }
+  };
+  wrap.querySelectorAll('[data-cbtn]').forEach((b) => b.addEventListener('click', () => submitComment(b.dataset.cbtn, wrap.querySelector(`[data-cinput="${b.dataset.cbtn}"]`))));
+  wrap.querySelectorAll('[data-cinput]').forEach((inp) => inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submitComment(inp.dataset.cinput, inp); } }));
 }
 
 
