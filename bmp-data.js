@@ -29,6 +29,15 @@ export const TIERS = {
     rules: { meetingsRequired: 5, meetingsTotal: 7, activitiesMode: 'choose', minPerCategory: 3, activitiesRequired: 20 },
     color: '#081e3f',
   },
+  mentor: {
+    key: 'mentor',
+    name: 'Brother Mentor Challenge',
+    blurb: 'The final phase of the Balanced Man Program. Mentor brothers in the earlier challenges and leave the chapter stronger than you found it.',
+    duration: 'Final year',
+    // Checklist program: every meeting and every item the VPMD adds under Manage Challenges is required.
+    rules: { meetingsRequired: 'all', meetingsTotal: null, activitiesMode: 'all', minPerCategory: 0, activitiesRequired: null },
+    color: '#081e3f',
+  },
 };
 
 // ---------------------------------------------------------------------------

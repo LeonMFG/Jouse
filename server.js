@@ -92,7 +92,7 @@ function approvedMember(req, res, next) {
 }
 // Which tiers a staff member may review/manage.
 function tiersFor(user) {
-  if (user.role === 'admin') return ['sigma', 'phi', 'epsilon'];
+  if (user.role === 'admin') return Object.keys(TIERS);
   if (user.role === 'coordinator') return user.tier ? [user.tier] : [];
   return [];
 }
@@ -104,7 +104,7 @@ app.post('/api/auth/register', (req, res) => {
   const { name, username, password, tier } = req.body || {};
   if (!name || !username || !password) return res.status(400).json({ error: 'Name, username, and password are required.' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
-  if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a valid challenge (Sigma, Phi, or Epsilon).' });
+  if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a valid challenge (Sigma, Phi, Epsilon, or Brother Mentor).' });
 
   const uname = String(username).toLowerCase().trim();
   if (!uname) return res.status(400).json({ error: 'Please choose a username.' });
@@ -158,6 +158,17 @@ app.post('/api/auth/change-password', authRequired, (req, res) => {
 // ===========================================================================
 // REQUIREMENTS + a member's own progress
 // ===========================================================================
+// A tier's rules, with meetingsRequired: 'all' resolved to the number of active meetings.
+function rulesFor(tier) {
+  const rules = { ...TIERS[tier].rules };
+  if (rules.meetingsRequired === 'all') {
+    rules.meetingsRequired = db.prepare("SELECT COUNT(*) c FROM requirements WHERE tier=? AND kind='meeting' AND active=1").get(tier).c;
+    rules.meetingsTotal = rules.meetingsRequired;
+  }
+  return rules;
+}
+const tierInfoFor = (tier) => ({ ...TIERS[tier], rules: rulesFor(tier) });
+
 function requirementsForTier(tier) {
   return db.prepare('SELECT * FROM requirements WHERE tier = ? AND active = 1 ORDER BY kind, sort_order').all(tier);
 }
@@ -170,7 +181,7 @@ app.get('/api/my/progress', authRequired, (req, res) => {
   const subs = db.prepare('SELECT * FROM submissions WHERE user_id = ?').all(req.user.id);
   const byReq = new Map(subs.map((s) => [s.requirement_id, s]));
   const items = reqs.map((r) => ({ ...r, submission: byReq.get(r.id) || null }));
-  res.json({ tier, rules: TIERS[tier].rules, tierInfo: TIERS[tier], items });
+  res.json({ tier, rules: rulesFor(tier), tierInfo: tierInfoFor(tier), items });
 });
 
 // Member submits / updates a submission for a requirement (with optional proof).
@@ -225,7 +236,7 @@ app.delete('/api/my/submissions/:id', authRequired, (req, res) => {
 
 // Compute a progress summary for a member.
 function summarize(userId, tier) {
-  const rules = TIERS[tier].rules;
+  const rules = rulesFor(tier);
   const reqs = requirementsForTier(tier);
   const subs = db.prepare("SELECT * FROM submissions WHERE user_id = ?").all(userId);
   const approved = new Set(subs.filter((s) => s.status === 'approved').map((s) => s.requirement_id));
@@ -252,7 +263,8 @@ function summarize(userId, tier) {
     Object.values(perCategory).filter((c) => c.done >= rules.minPerCategory).length >=
       Object.keys(perCategory).length;
   const activitiesOk = activitiesDone >= activitiesTarget && minCatOk && mandatoryDone === mandatoryItems.length;
-  const complete = meetingsOk && activitiesOk;
+  // A challenge with nothing in it yet can't be "complete".
+  const complete = reqs.length > 0 && meetingsOk && activitiesOk;
 
   return {
     meetings: { done: meetingsDone, required: rules.meetingsRequired, total: meetings.length },
@@ -354,7 +366,7 @@ app.get('/api/staff/members/:id', authRequired, staffRequired, (req, res) => {
   const subs = db.prepare('SELECT * FROM submissions WHERE user_id = ?').all(member.id);
   const byReq = new Map(subs.map((s) => [s.requirement_id, s]));
   const items = reqs.map((r) => ({ ...r, submission: byReq.get(r.id) || null }));
-  res.json({ member, items, summary: summarize(member.id, member.tier), tierInfo: TIERS[member.tier] });
+  res.json({ member, items, summary: summarize(member.id, member.tier), tierInfo: tierInfoFor(member.tier) });
 });
 
 // Approve / deny a submission.
@@ -418,11 +430,11 @@ app.get('/api/admin/users', authRequired, adminRequired, (req, res) => {
 
 app.post('/api/admin/users/:id/role', authRequired, adminRequired, (req, res) => {
   const role = req.body.role;       // member | coordinator | admin
-  let tier = req.body.tier || null; // sigma | phi | epsilon | null
+  let tier = req.body.tier || null; // sigma | phi | epsilon | mentor | null
   if (!['member', 'coordinator', 'admin'].includes(role)) return res.status(400).json({ error: 'Invalid role.' });
   if (role === 'admin') tier = null;
   if ((role === 'member' || role === 'coordinator') && !TIERS[tier])
-    return res.status(400).json({ error: 'Please choose a challenge (Sigma, Phi, or Epsilon) for that role.' });
+    return res.status(400).json({ error: 'Please choose a challenge (Sigma, Phi, Epsilon, or Brother Mentor) for that role.' });
 
   const target = db.prepare('SELECT id, role FROM users WHERE id=?').get(req.params.id);
   if (!target) return res.status(404).json({ error: 'User not found.' });
@@ -632,7 +644,7 @@ app.post('/api/admin/users', authRequired, adminRequired, (req, res) => {
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   if (!['member', 'coordinator', 'admin'].includes(role)) return res.status(400).json({ error: 'Please choose a valid role.' });
   if (role === 'admin') tier = null;
-  else if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a challenge (Sigma, Phi, or Epsilon).' });
+  else if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a challenge (Sigma, Phi, Epsilon, or Brother Mentor).' });
   const existing = db.prepare('SELECT 1 FROM users WHERE email = ?').get(username);
   if (existing) return res.status(409).json({ error: 'That username is already taken.' });
   const info = db.prepare(`
@@ -679,7 +691,7 @@ function statusLabel(kind, status) {
 }
 
 async function buildMemberWorkbook(member) {
-  const info = TIERS[member.tier] || { name: member.tier, rules: {} };
+  const info = TIERS[member.tier] ? tierInfoFor(member.tier) : { name: member.tier, rules: {} };
   const reqs = requirementsForTier(member.tier);
   const subs = db.prepare('SELECT * FROM submissions WHERE user_id = ?').all(member.id);
   const byReq = new Map(subs.map((s) => [s.requirement_id, s]));
@@ -797,11 +809,11 @@ app.get('/api/admin/requirements', authRequired, adminRequired, (req, res) => {
 app.post('/api/admin/requirements', authRequired, adminRequired, (req, res) => {
   const b = req.body || {};
   const tier = b.tier;
-  if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a valid challenge (Sigma, Phi, or Epsilon).' });
+  if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a valid challenge (Sigma, Phi, Epsilon, or Brother Mentor).' });
   const title = String(b.title || '').trim();
   if (!title) return res.status(400).json({ error: 'A title is required.' });
   const isMeeting = b.kind === 'meeting';
-  const kind = isMeeting ? 'meeting' : (tier === 'sigma' ? 'checklist' : 'activity');
+  const kind = isMeeting ? 'meeting' : (TIERS[tier].rules.activitiesMode === 'all' ? 'checklist' : 'activity');
   const category = isMeeting ? 'Meetings' : (String(b.category || '').trim() || 'General');
   const description = String(b.description || '').trim() || null;
   const mandatory = b.mandatory ? 1 : 0;

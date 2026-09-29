@@ -5,6 +5,11 @@
 // ===========================================================================
 
 const App = document.getElementById('app');
+
+// Challenge tiers, in program order. Keys are stored in the database; labels are for display.
+const TIER_KEYS = ['sigma', 'phi', 'epsilon', 'mentor'];
+const TIER_LABELS = { sigma: 'Sigma', phi: 'Phi', epsilon: 'Epsilon', mentor: 'Brother Mentor' };
+const tierLabel = (t) => TIER_LABELS[t] || (t ? t[0].toUpperCase() + t.slice(1) : '');
 const ModalRoot = document.getElementById('modal-root');
 const ToastRoot = document.getElementById('toast-root');
 
@@ -96,6 +101,7 @@ function renderAuth() {
                 <option value="sigma">Sigma Challenge (new member)</option>
                 <option value="phi">Phi Challenge</option>
                 <option value="epsilon">Epsilon Challenge</option>
+                <option value="mentor">Brother Mentor Challenge</option>
               </select>
             </div>`}
           <button class="btn full" type="submit" id="auth-submit">${login ? 'Sign in' : 'Create account'}</button>
@@ -151,7 +157,7 @@ function renderShell(content) {
       <div class="topbar">
         <div class="logo"><img class="crest-mark" src="/crest.svg" alt="ΣΦΕ" /> BMP Tracker</div>
         <div class="spacer"></div>
-        <div class="who"><b>${esc(u.name)}</b><span>${esc(u.role)}${u.tier ? ' · ' + u.tier : ''}</span></div>
+        <div class="who"><b>${esc(u.name)}</b><span>${esc(u.role)}${u.tier ? ' · ' + esc(tierLabel(u.tier)) : ''}</span></div>
         <button class="out" id="account">Account</button>
         <button class="out" id="logout">Sign out</button>
       </div>
@@ -285,7 +291,7 @@ function renderWaiting() {
       <div class="topbar">
         <div class="logo"><img class="crest-mark" src="/crest.svg" alt="ΣΦΕ" /> BMP Tracker</div>
         <div class="spacer"></div>
-        <div class="who"><b>${esc(state.user.name)}</b><span>${esc(state.user.tier || '')}</span></div>
+        <div class="who"><b>${esc(state.user.name)}</b><span>${esc(tierLabel(state.user.tier))}</span></div>
         <button class="out" id="account">Account</button>
         <button class="out" id="logout">Sign out</button>
       </div>
@@ -328,7 +334,7 @@ function progressOf(items, rules) {
   const target = rules.activitiesMode === 'all' ? activities.length : rules.activitiesRequired;
   const minCatOk = rules.minPerCategory === 0 ||
     Object.values(perCat).every((c) => c.done >= rules.minPerCategory);
-  const complete = meetingsDone >= rules.meetingsRequired &&
+  const complete = (meetings.length + activities.length) > 0 && meetingsDone >= rules.meetingsRequired &&
     activitiesDone >= target && minCatOk && mandatoryDone === mandatory.length;
   return { meetings, activities, meetingsDone, activitiesDone, perCat, mandatory, mandatoryDone, target, complete };
 }
@@ -567,7 +573,7 @@ async function renderQueue() {
     <div class="card queue-card" data-sub="${s.id}">
       <div class="qhead">
         <div>
-          <div class="who-line"><b>${esc(s.member_name)}</b> · <span class="tier-chip">${esc(s.member_tier)}</span></div>
+          <div class="who-line"><b>${esc(s.member_name)}</b> · <span class="tier-chip">${esc(tierLabel(s.member_tier))}</span></div>
           <div class="title" style="font-weight:600;margin-top:6px;font-size:14.5px">${esc(s.req_title)}${s.mandatory ? '<span class="mand">Mandatory</span>' : ''}</div>
           <div class="desc" style="color:var(--muted);font-size:12.5px">${esc(s.req_category)} · ${esc(s.req_kind)} · submitted ${fmtDate(s.submitted_at)}</div>
         </div>
@@ -634,7 +640,7 @@ async function renderRoster() {
       <label style="font-size:13px;color:var(--muted);font-weight:600">Filter:</label>
       <select id="tier-filter">
         <option value="">All challenges</option>
-        ${data.tiers.map((t) => `<option value="${t}">${t[0].toUpperCase() + t.slice(1)}</option>`).join('')}
+        ${data.tiers.map((t) => `<option value="${t}">${esc(tierLabel(t))}</option>`).join('')}
       </select>
     </div>` : '';
 
@@ -652,7 +658,7 @@ async function renderRoster() {
           <div class="bar ${aPct >= 100 ? 'green' : ''}"><i style="width:${aPct}%"></i></div>
           ${s.pending ? `<div style="font-size:11px;color:var(--amber);font-weight:700;margin-top:5px">${s.pending} pending review</div>` : ''}
         </div>
-        <div><span class="tier-chip">${esc(m.tier)}</span></div>
+        <div><span class="tier-chip">${esc(tierLabel(m.tier))}</span></div>
       </div>`;
   };
 
@@ -690,7 +696,7 @@ async function renderPending() {
     <div class="card queue-card" data-pend="${m.id}">
       <div class="qhead">
         <div>
-          <div class="who-line"><b>${esc(m.name)}</b> · <span class="tier-chip">${esc(m.tier)}</span></div>
+          <div class="who-line"><b>${esc(m.name)}</b> · <span class="tier-chip">${esc(tierLabel(m.tier))}</span></div>
           <div class="desc" style="color:var(--muted);font-size:12.5px">${esc(m.email)} · signed up ${fmtDate(m.created_at)}</div>
         </div>
         <div class="actions">
@@ -721,8 +727,8 @@ async function renderRoles() {
   let data;
   try { data = await api('/admin/users'); } catch (e) { return showError(e); }
 
-  const tierOpts = (sel) => ['sigma', 'phi', 'epsilon']
-    .map((t) => `<option value="${t}" ${sel === t ? 'selected' : ''}>${t[0].toUpperCase() + t.slice(1)}</option>`).join('');
+  const tierOpts = (sel) => TIER_KEYS
+    .map((t) => `<option value="${t}" ${sel === t ? 'selected' : ''}>${tierLabel(t)}</option>`).join('');
   const roleOpts = (sel) => ['member', 'coordinator', 'admin']
     .map((r) => `<option value="${r}" ${sel === r ? 'selected' : ''}>${r === 'admin' ? 'Admin (VPMD)' : r[0].toUpperCase() + r.slice(1)}</option>`).join('');
 
@@ -730,7 +736,7 @@ async function renderRoles() {
   const rows = data.users.map((u) => {
     const isSelf = u.id === state.user.id;
     const badge = u.role === 'admin' ? '<span class="tier-chip" style="background:var(--red);color:#fff">VPMD</span>'
-      : u.role === 'coordinator' ? `<span class="tier-chip">${u.tier} coord.</span>` : '';
+      : u.role === 'coordinator' ? `<span class="tier-chip">${esc(tierLabel(u.tier))} coord.</span>` : '';
     return `
       <div class="roster-row" style="cursor:default;grid-template-columns:1fr auto auto auto auto auto" data-row="${u.id}">
         <div>
@@ -885,8 +891,8 @@ function fmtDate(s) {
 async function renderChallenges() {
   let data;
   try { data = await api('/admin/requirements'); } catch (e) { return showError(e); }
-  const tiers = ['sigma', 'phi', 'epsilon'];
-  const tierName = { sigma: 'Sigma', phi: 'Phi', epsilon: 'Epsilon' };
+  const tiers = TIER_KEYS;
+  const tierName = TIER_LABELS;
   const cur = state.challTier || 'sigma';
   const showHidden = !!state.challShowHidden;
 
@@ -980,7 +986,7 @@ function openItemModal(tier, existing, data) {
     <div class="modal-overlay" id="ci-overlay">
       <div class="modal" style="max-width:520px">
         <div class="modal-head">
-          <h3>${isEdit ? 'Edit item' : 'Add item'} — ${tier[0].toUpperCase() + tier.slice(1)} Challenge</h3>
+          <h3>${isEdit ? 'Edit item' : 'Add item'} — ${tierLabel(tier)} Challenge</h3>
         </div>
         <div class="modal-body">
           <div id="ci-error"></div>
@@ -1073,6 +1079,7 @@ function openCreateAccountModal() {
               <option value="sigma">Sigma</option>
               <option value="phi">Phi</option>
               <option value="epsilon">Epsilon</option>
+              <option value="mentor">Brother Mentor</option>
             </select>
           </div>
         </div>
@@ -1185,11 +1192,11 @@ async function renderLeaderboard() {
       <div class="lb-rank">${medal(i)}</div>
       <div class="lb-name">
         <b>${esc(m.name)}</b>${m.id === me ? ' <span class="tier-chip" style="background:#eaf0f8">you</span>' : ''}
-        <div class="lb-sub">${esc(m.tier || '')} · ${m.meetings} meeting${m.meetings === 1 ? '' : 's'} · ${m.activities} activit${m.activities === 1 ? 'y' : 'ies'}</div>
+        <div class="lb-sub">${esc(tierLabel(m.tier))} · ${m.meetings} meeting${m.meetings === 1 ? '' : 's'} · ${m.activities} activit${m.activities === 1 ? 'y' : 'ies'}</div>
       </div>
       <div class="lb-pts">${m.points}<span>pts</span></div>
     </div>`).join('');
-  const filters = [['all', 'All'], ['sigma', 'Sigma'], ['phi', 'Phi'], ['epsilon', 'Epsilon']];
+  const filters = [['all', 'All'], ...TIER_KEYS.map((t) => [t, tierLabel(t)])];
   setView(`
     <h2 class="section-title">Leaderboard 🏆</h2>
     <p class="section-sub">Earn points by attending meetings and completing challenges — tougher tasks are worth more. Climb the ranks!</p>
