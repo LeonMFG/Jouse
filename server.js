@@ -101,8 +101,14 @@ function tiersFor(user) {
 // AUTH
 // ===========================================================================
 app.post('/api/auth/register', (req, res) => {
-  const { name, username, password, tier } = req.body || {};
-  if (!name || !username || !password) return res.status(400).json({ error: 'Name, username, and password are required.' });
+  const { username, password, tier } = req.body || {};
+  const first = String(req.body?.firstName || '').trim();
+  const last = String(req.body?.lastName || '').trim();
+  const name = (first || last) ? `${first} ${last}`.trim() : String(req.body?.name || '').trim().replace(/\s+/g, ' ');
+  // Everyone must sign up with a first AND last name so the VPMD can match them to the roster.
+  if ((first || last) ? !(first && last) : name.split(' ').length < 2)
+    return res.status(400).json({ error: 'Please enter both your first and last name.' });
+  if (!username || !password) return res.status(400).json({ error: 'Name, username, and password are required.' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
   if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a valid challenge (Sigma, Phi, Epsilon, or Brother Mentor).' });
 

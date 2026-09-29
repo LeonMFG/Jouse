@@ -81,10 +81,17 @@ function renderAuth() {
         <div id="auth-error"></div>
         <form id="auth-form">
           ${login ? '' : `
-            <div class="field">
-              <label>Full name</label>
-              <input name="name" autocomplete="name" placeholder="First Last" required />
-            </div>`}
+            <div class="name-row">
+              <div class="field">
+                <label>First name</label>
+                <input name="firstName" autocomplete="given-name" placeholder="e.g. Juan" required />
+              </div>
+              <div class="field">
+                <label>Last name</label>
+                <input name="lastName" autocomplete="family-name" placeholder="e.g. Perez" required />
+              </div>
+            </div>
+            <p class="field-hint">Use your real first <b>and</b> last name so the chapter can match you to the roster — no nicknames.</p>`}
           <div class="field">
             <label>Username</label>
             <input name="username" type="text" autocomplete="username" placeholder="Your username" required />
@@ -124,6 +131,12 @@ function renderAuth() {
     btn.disabled = true; btn.textContent = login ? 'Signing in…' : 'Creating…';
     try {
       const payload = Object.fromEntries(f.entries());
+      if (!login) {
+        const first = String(payload.firstName || '').trim();
+        const last = String(payload.lastName || '').trim();
+        if (!first || !last) throw new Error('Please enter both your first and last name.');
+        payload.name = `${first} ${last}`;
+      }
       const data = await api(login ? '/auth/login' : '/auth/register', { method: 'POST', body: payload });
       state.user = data.user;
       const me = await api('/auth/me');
