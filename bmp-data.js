@@ -208,10 +208,8 @@ export const REQUIREMENTS = buildRequirements();
 
 // Default accounts seeded on first run (taken from the challenge documents).
 // Passwords are intentionally simple defaults — change them after first login.
+// Accounts the startup seed makes sure exist. Only the Test Brother member account —
+// the demo VPMD and coordinator accounts were removed on purpose and must not come back.
 export const SEED_USERS = [
-  { name: 'Alejandro Mendez', email: 'vpmd@fiusigep.com', password: 'sigep123', role: 'admin', tier: null },
-  { name: 'Jared Rivera', email: 'sigma.coordinator@fiusigep.com', password: 'sigep123', role: 'coordinator', tier: 'sigma' },
-  { name: 'Noel Leon', email: 'phi.coordinator@fiusigep.com', password: 'sigep123', role: 'coordinator', tier: 'phi' },
-  { name: "Anthony O'Reiley", email: 'epsilon.coordinator@fiusigep.com', password: 'sigep123', role: 'coordinator', tier: 'epsilon' },
   { name: 'Test Brother', email: 'brother@fiusigep.com', password: 'sigep123', role: 'member', tier: 'phi' },
 ];

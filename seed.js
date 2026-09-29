@@ -29,11 +29,8 @@ const insertUser = db.prepare(`
   INSERT INTO users (name, email, password_hash, role, tier)
   VALUES (@name, @email, @password_hash, @role, @tier)
 `);
-// Only create the demo accounts on a brand-new, empty database. Once real people are
-// using the site, accounts the VPMD deleted must never come back on a restart.
-const userCount = db.prepare('SELECT COUNT(*) c FROM users').get().c;
 let added = 0;
-for (const u of userCount === 0 ? SEED_USERS : []) {
+for (const u of SEED_USERS) {
   const exists = db.prepare('SELECT 1 FROM users WHERE email = ?').get(u.email);
   if (exists) continue;
   insertUser.run({
