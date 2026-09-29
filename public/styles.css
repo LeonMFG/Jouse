@@ -294,6 +294,13 @@ input, textarea, select { font-family: inherit; }
 .back-link { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--gold); background: none; border: none; padding: 0; margin-bottom: 16px; text-transform: uppercase; letter-spacing: .5px; }
 .filter-row { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; align-items: center; }
 .filter-row select { padding: 9px 12px; border: 1px solid var(--line-2); border-radius: var(--radius); font-size: 13px; background: var(--navy-0); color: var(--ink); }
+.count-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.count-chip { font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--navy-0); border: 1px solid var(--line-2); border-radius: var(--radius); padding: 6px 10px; cursor: pointer; }
+.count-chip b { color: var(--ink); margin-left: 4px; }
+.count-chip:hover { border-color: var(--gold-line); }
+.count-chip.active { background: var(--gold-soft); border-color: var(--gold-line); color: var(--gold-hi); }
+.count-chip.active b { color: var(--gold-hi); }
+@media (max-width: 640px) { .count-chips { margin-left: 0; width: 100%; } }
 
 /* ============================= Toast =================================== */
 #toast-root { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 90; display: flex; flex-direction: column; gap: 8px; align-items: center; }

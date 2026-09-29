@@ -635,6 +635,13 @@ async function renderRoster() {
       <div class="empty"><div class="big">👥</div>No members have signed up in your group yet.</div>`);
   }
 
+  // How many brothers are in each challenge group (shown beside the filter).
+  const countFor = (t) => (t ? data.members.filter((m) => m.tier === t).length : data.members.length);
+  const plural = (n) => `${n} brother${n === 1 ? '' : 's'}`;
+  const countsHtml = (sel) => [['', 'All'], ...data.tiers.map((t) => [t, tierLabel(t)])]
+    .map(([t, l]) => `<button type="button" class="count-chip ${t === sel ? 'active' : ''}" data-count-tier="${t}">${esc(l)} <b>${countFor(t)}</b></button>`)
+    .join('');
+
   const filter = multiTier ? `
     <div class="filter-row">
       <label style="font-size:13px;color:var(--muted);font-weight:600">Filter:</label>
@@ -642,6 +649,7 @@ async function renderRoster() {
         <option value="">All challenges</option>
         ${data.tiers.map((t) => `<option value="${t}">${esc(tierLabel(t))}</option>`).join('')}
       </select>
+      <div class="count-chips" id="tier-counts">${countsHtml('')}</div>
     </div>` : '';
 
   const rowFor = (m) => {
@@ -663,18 +671,29 @@ async function renderRoster() {
   };
 
   setView(`<h2 class="section-title">My Members</h2>
-    <p class="section-sub">${data.members.length} brother${data.members.length === 1 ? '' : 's'} in your challenge group. Click anyone to view and manage their progress.</p>
+    <p class="section-sub"><span id="roster-count">${plural(data.members.length)} in your challenge group.</span> Click anyone to view and manage their progress.</p>
     ${filter}
     <div class="roster" id="roster">${data.members.map(rowFor).join('')}</div>`);
 
   App.querySelectorAll('[data-member]').forEach((r) =>
     r.addEventListener('click', () => { state.memberId = Number(r.dataset.member); state.view = 'member'; render(); }));
-  document.getElementById('tier-filter')?.addEventListener('change', (e) => {
-    const v = e.target.value;
+  const applyFilter = (v) => {
     App.querySelectorAll('#roster [data-member]').forEach((r) => {
       r.style.display = (!v || r.dataset.tier === v) ? '' : 'none';
     });
-  });
+    const sel = document.getElementById('tier-filter');
+    if (sel) sel.value = v;
+    const counts = document.getElementById('tier-counts');
+    if (counts) {
+      counts.innerHTML = countsHtml(v);
+      counts.querySelectorAll('[data-count-tier]').forEach((b) =>
+        b.addEventListener('click', () => applyFilter(b.dataset.countTier)));
+    }
+    const line = document.getElementById('roster-count');
+    if (line) line.textContent = v ? `${plural(countFor(v))} in ${tierLabel(v)}.` : `${plural(data.members.length)} in your challenge group.`;
+  };
+  document.getElementById('tier-filter')?.addEventListener('change', (e) => applyFilter(e.target.value));
+  if (multiTier) applyFilter('');
 }
 
 // ===========================================================================
