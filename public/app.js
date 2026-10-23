@@ -1441,7 +1441,7 @@ async function renderAgreement() {
         <div class="ag-signed-top">
           <div><div class="ag-ok">✓ Signed</div>
             <p>You signed the agreement on <b>${esc(fmtDate(sg.signed_at))}</b> as <b>${esc(sg.printed_name)}</b>.</p></div>
-          ${pdfBtn}
+          <a class="btn sm" href="/api/agreement/signed-pdf">Download my signed copy (PDF)</a>
         </div>
         <div class="ag-sig-view"><img src="${esc(sg.signature)}" alt="Your signature" /></div>
       </div>
@@ -1494,7 +1494,7 @@ async function renderAgreement() {
         version: a.version, agree: agree.checked, printed_name: nameEl.value, signature: pad.toDataURL(),
       } });
       state.agreement = res.agreement;
-      toast('Agreement signed — thank you!', 'ok');
+      toast('Agreement signed — your signed copy is ready to download.', 'ok');
       render();
       window.scrollTo(0, 0);
     } catch (err) {
@@ -1544,7 +1544,27 @@ function makeSignaturePad(canvas, onChange) {
   return {
     isEmpty: () => strokes === 0 || inkLength < 25,   // a dot or a tiny tick isn't a signature
     clear: () => { setup(); onChange && onChange(); },
-    toDataURL: () => canvas.toDataURL('image/png'),
+    // Trim the empty space around the ink so the signature sits neatly on the PDF's line.
+    toDataURL: () => {
+      const { width: w, height: h } = canvas;
+      const px = ctx.getImageData(0, 0, w, h).data;
+      let x0 = w, y0 = h, x1 = -1, y1 = -1;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        if (px[i] < 200 || px[i + 1] < 200 || px[i + 2] < 200) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+      }
+      if (x1 < 0) return canvas.toDataURL('image/png');
+      const pad = Math.round(6 * Math.max(1, window.devicePixelRatio || 1));
+      x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(w - 1, x1 + pad); y1 = Math.min(h - 1, y1 + pad);
+      const out = document.createElement('canvas');
+      out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
+      const o = out.getContext('2d');
+      o.fillStyle = '#ffffff'; o.fillRect(0, 0, out.width, out.height);
+      o.drawImage(canvas, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+      return out.toDataURL('image/png');
+    },
   };
 }
 
@@ -1629,7 +1649,7 @@ async function openSignatureModal(userId) {
           <div class="ag-kv"><span>Account</span><b>${esc(d.user.email)}</b></div>
         </div>
         <div class="modal-foot">
-          <button class="btn ghost" id="sg-print">Print / save as PDF</button>
+          <a class="btn ghost" href="/api/staff/agreement/${d.user.id}/pdf">Download signed PDF</a>
           <button class="btn" id="sg-close">Close</button>
         </div>
       </div>
@@ -1637,21 +1657,4 @@ async function openSignatureModal(userId) {
   const close = () => { ModalRoot.innerHTML = ''; };
   document.getElementById('sg-close').addEventListener('click', close);
   document.getElementById('sg-overlay').addEventListener('click', (e) => { if (e.target.id === 'sg-overlay') close(); });
-  document.getElementById('sg-print').addEventListener('click', () => {
-    const w = window.open('', '_blank');
-    if (!w) return toast('Allow pop-ups to print this record.', 'err');
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(s.printed_name)} — Membership Agreement</title>
-      <style>body{font-family:Georgia,serif;max-width:640px;margin:48px auto;color:#111;padding:0 24px}h1{font-size:20px;margin:0 0 4px}
-      .sub{color:#555;margin:0 0 28px;font-size:14px}.ack{font-weight:bold;line-height:1.5;margin:0 0 28px}.lbl{font-size:12px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-top:22px}
-      .val{font-size:17px;border-bottom:1px solid #999;padding:6px 0}img{max-width:100%;height:auto;border-bottom:1px solid #999;display:block}</style></head><body>
-      <h1>Membership Agreement Acknowledgement Form</h1>
-      <p class="sub">Sigma Phi Epsilon Fraternity, Florida Nu Chapter · ${esc(d.agreement.updated)}</p>
-      <p class="ack">${esc(d.agreement.acknowledgement)}</p>
-      <div class="lbl">Member Name (Printed)</div><div class="val">${esc(s.printed_name)}</div>
-      <div class="lbl">Member Name (Signature)</div><img src="${esc(s.signature)}" alt="signature" />
-      <div class="lbl">Date</div><div class="val">${esc(fmtDate(s.signed_at))}</div>
-      <div class="lbl">Signed online at jousefiu.com by account</div><div class="val">${esc(d.user.email)}</div>
-      <script>window.onload=()=>window.print()<\/script></body></html>`);
-    w.document.close();
-  });
 }

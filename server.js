@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { db } from './db.js';
 import { TIERS } from './bmp-data.js';
 import ExcelJS from 'exceljs';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -882,6 +883,15 @@ const AGREEMENT = {
   updated: 'Updated June 2026',
   pages: 10,
   pdf: 'FL-Nu-2026-Membership-Agreement.pdf',
+  // Where the acknowledgement lines sit on the last page (PDF points, origin bottom-left).
+  // If a new agreement PDF is uploaded later, keep the old file for old signatures and
+  // re-measure these for the new one.
+  form: {
+    page: 10,
+    printed:   { x: 76,  y: 189, maxWidth: 266 },          // above "Member Name (Printed)"
+    signature: { x: 76,  y: 113, maxWidth: 262, maxHeight: 50 }, // above "Member Name (Signature)"
+    date:      { x: 400, y: 115, maxWidth: 138 },           // above "Date"
+  },
   acknowledgement: 'I ACKNOWLEDGE THAT I HAVE READ AND FULLY UNDERSTAND THE ABOVE AGREEMENT AND ACCEPT THE TERMS. I UNDERSTAND THAT IS MY RESPONSIBILITY TO ADHERE TO THIS AGREEMENT.',
 };
 const AGREEMENT_DIR = path.join(__dirname, 'agreement');
@@ -907,6 +917,61 @@ app.get('/api/agreement/page/:n', authRequired, (req, res) => {
 });
 app.get('/api/agreement/pdf', authRequired, (req, res) => {
   res.download(path.join(AGREEMENT_DIR, AGREEMENT.pdf), AGREEMENT.pdf);
+});
+
+
+// Build a completed copy of the agreement: the original PDF with the brother's printed name,
+// drawn signature and date placed on the acknowledgement lines, plus a small e-signature note.
+async function buildSignedAgreementPdf(sig) {
+  const f = AGREEMENT.form;
+  const pdf = await PDFDocument.load(fs.readFileSync(path.join(AGREEMENT_DIR, AGREEMENT.pdf)));
+  const page = pdf.getPage(f.page - 1);
+  const font = await pdf.embedFont(StandardFonts.TimesRoman);
+  const small = await pdf.embedFont(StandardFonts.Helvetica);
+  const ink = rgb(0.04, 0.08, 0.16);
+
+  const fit = (text, fnt, size, maxWidth) => {
+    while (size > 7 && fnt.widthOfTextAtSize(text, size) > maxWidth) size -= 0.5;
+    return size;
+  };
+  // Printed name
+  page.drawText(sig.printed_name, { x: f.printed.x, y: f.printed.y, font, color: ink,
+    size: fit(sig.printed_name, font, 13, f.printed.maxWidth) });
+  // Signature image, scaled to fit the line and sitting on it
+  const png = await pdf.embedPng(Buffer.from(sig.signature.split(',')[1], 'base64'));
+  const scale = Math.min(f.signature.maxWidth / png.width, f.signature.maxHeight / png.height);
+  page.drawImage(png, { x: f.signature.x, y: f.signature.y, width: png.width * scale, height: png.height * scale });
+  // Date (chapter's local time)
+  const when = new Date(String(sig.signed_at).replace(' ', 'T') + 'Z');
+  const dateText = when.toLocaleDateString('en-US', { timeZone: 'America/New_York', year: 'numeric', month: 'long', day: 'numeric' });
+  page.drawText(dateText, { x: f.date.x, y: f.date.y, font, color: ink, size: fit(dateText, font, 13, f.date.maxWidth) });
+  // E-signature record
+  const stamp = when.toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'medium', timeStyle: 'short' });
+  page.drawText(`Signed electronically at jousefiu.com by account "${sig.username}" on ${stamp} (Eastern).`,
+    { x: 72, y: 40, size: 7.5, font: small, color: rgb(0.4, 0.42, 0.46) });
+
+  pdf.setTitle(`${AGREEMENT.title} — signed by ${sig.printed_name}`);
+  pdf.setSubject(AGREEMENT.title);
+  return Buffer.from(await pdf.save());
+}
+function sendSignedPdf(res, sig) {
+  return buildSignedAgreementPdf(sig).then((buf) => {
+    const safe = sig.printed_name.replace(/[^A-Za-z0-9 _-]/g, '').trim().replace(/\s+/g, '-') || 'member';
+    res.set('Content-Type', 'application/pdf');
+    res.set('Content-Disposition', `attachment; filename="FL-Nu-2026-Membership-Agreement-${safe}.pdf"`);
+    res.send(buf);
+  });
+}
+
+// A brother's own signed copy.
+app.get('/api/agreement/signed-pdf', authRequired, async (req, res, next) => {
+  try {
+    const sig = db.prepare(
+      'SELECT printed_name, signature, signed_at, username FROM agreement_signatures WHERE user_id = ? AND version = ?'
+    ).get(req.user.id, AGREEMENT.version);
+    if (!sig) return res.status(404).json({ error: "You haven't signed the agreement yet." });
+    await sendSignedPdf(res, sig);
+  } catch (e) { next(e); }
 });
 
 // Sign it.
@@ -968,6 +1033,21 @@ app.get('/api/staff/agreement/:userId', authRequired, staffRequired, (req, res) 
   ).get(u.id, AGREEMENT.version);
   if (!sig) return res.status(404).json({ error: `${u.name} hasn't signed yet.` });
   res.json({ user: u, signature: sig, agreement: AGREEMENT });
+});
+
+// Staff: download one brother's completed agreement as a PDF.
+app.get('/api/staff/agreement/:userId/pdf', authRequired, staffRequired, async (req, res, next) => {
+  try {
+    const u = db.prepare('SELECT id, role, tier FROM users WHERE id = ?').get(req.params.userId);
+    if (!u) return res.status(404).json({ error: 'Account not found.' });
+    if (req.user.role !== 'admin' && !(u.role === 'member' && tiersFor(req.user).includes(u.tier)))
+      return res.status(403).json({ error: 'Not in your challenge group.' });
+    const sig = db.prepare(
+      'SELECT printed_name, signature, signed_at, username FROM agreement_signatures WHERE user_id = ? AND version = ?'
+    ).get(u.id, AGREEMENT.version);
+    if (!sig) return res.status(404).json({ error: "This brother hasn't signed yet." });
+    await sendSignedPdf(res, sig);
+  } catch (e) { next(e); }
 });
 
 // --- Static frontend ------------------------------------------------------
