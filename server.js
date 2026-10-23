@@ -27,7 +27,7 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const app = express();
 app.set('trust proxy', 1); // behind a reverse proxy / platform load balancer (for secure cookies + HTTPS detection)
-app.use(express.json());
+app.use(express.json({ limit: '1mb' })); // room for a drawn signature image
 app.use(cookieParser());
 
 // --- File uploads (photo / document proof) --------------------------------
@@ -144,7 +144,7 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/me', authRequired, (req, res) => {
-  res.json({ user: req.user, tiers: TIERS });
+  res.json({ user: req.user, tiers: TIERS, agreement: agreementStatusFor(req.user.id) });
 });
 
 // Any signed-in user can change their own password.
@@ -869,6 +869,105 @@ app.get('/uploads/:file', authRequired, (req, res) => {
     (req.user.role === 'coordinator' && tiersFor(req.user).includes(sub.member_tier));
   if (!isOwner && !isStaff) return res.status(403).end();
   res.sendFile(path.join(UPLOAD_DIR, file));
+});
+
+// ===========================================================================
+// MEMBERSHIP AGREEMENT — every brother reads and signs the chapter agreement
+// ===========================================================================
+// To roll out a new agreement later: drop the new PDF + page images in /agreement,
+// bump `version`, and everyone will be asked to sign again (old signatures are kept).
+const AGREEMENT = {
+  version: 'fl-nu-2026',
+  title: 'Florida Nu Membership Agreement',
+  updated: 'Updated June 2026',
+  pages: 10,
+  pdf: 'FL-Nu-2026-Membership-Agreement.pdf',
+  acknowledgement: 'I ACKNOWLEDGE THAT I HAVE READ AND FULLY UNDERSTAND THE ABOVE AGREEMENT AND ACCEPT THE TERMS. I UNDERSTAND THAT IS MY RESPONSIBILITY TO ADHERE TO THIS AGREEMENT.',
+};
+const AGREEMENT_DIR = path.join(__dirname, 'agreement');
+
+function agreementStatusFor(userId) {
+  const row = db.prepare('SELECT printed_name, signed_at FROM agreement_signatures WHERE user_id = ? AND version = ?')
+    .get(userId, AGREEMENT.version);
+  return { version: AGREEMENT.version, signed: !!row, signed_at: row?.signed_at || null };
+}
+
+// The agreement itself (signed-in brothers only — it's an internal chapter document).
+app.get('/api/agreement', authRequired, (req, res) => {
+  const mine = db.prepare(
+    'SELECT printed_name, signature, signed_at FROM agreement_signatures WHERE user_id = ? AND version = ?'
+  ).get(req.user.id, AGREEMENT.version);
+  res.json({ agreement: AGREEMENT, signature: mine || null });
+});
+app.get('/api/agreement/page/:n', authRequired, (req, res) => {
+  const n = Number(req.params.n);
+  if (!Number.isInteger(n) || n < 1 || n > AGREEMENT.pages) return res.status(404).end();
+  res.set('Cache-Control', 'private, max-age=86400');
+  res.sendFile(path.join(AGREEMENT_DIR, `page-${String(n).padStart(2, '0')}.png`));
+});
+app.get('/api/agreement/pdf', authRequired, (req, res) => {
+  res.download(path.join(AGREEMENT_DIR, AGREEMENT.pdf), AGREEMENT.pdf);
+});
+
+// Sign it.
+app.post('/api/agreement/sign', authRequired, approvedMember, (req, res) => {
+  const b = req.body || {};
+  const printed = String(b.printed_name || '').trim().replace(/\s+/g, ' ');
+  const signature = String(b.signature || '');
+  if (b.version !== AGREEMENT.version)
+    return res.status(409).json({ error: 'The agreement was updated. Please refresh the page and review it again.' });
+  if (b.agree !== true)
+    return res.status(400).json({ error: 'Please check the box to confirm you have read and accept the agreement.' });
+  if (printed.split(' ').length < 2 || printed.length > 120)
+    return res.status(400).json({ error: 'Please print your first and last name.' });
+  if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(signature) || signature.length < 200 || signature.length > 600000)
+    return res.status(400).json({ error: 'Please draw your signature in the box.' });
+  if (agreementStatusFor(req.user.id).signed)
+    return res.status(409).json({ error: 'You have already signed this agreement.' });
+
+  db.prepare(`INSERT INTO agreement_signatures (user_id, username, version, printed_name, signature, ip, user_agent)
+              VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+    req.user.id, req.user.email, AGREEMENT.version, printed, signature,
+    String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim().slice(0, 64),
+    String(req.headers['user-agent'] || '').slice(0, 300)
+  );
+  res.json({ ok: true, agreement: agreementStatusFor(req.user.id) });
+});
+
+// Staff: who has and hasn't signed. VPMD sees every active account; coordinators see their group.
+app.get('/api/staff/agreement', authRequired, staffRequired, (req, res) => {
+  let users;
+  if (req.user.role === 'admin') {
+    users = db.prepare("SELECT id, name, email, role, tier FROM users WHERE status = 'active' ORDER BY name").all();
+  } else {
+    const tiers = tiersFor(req.user);
+    if (tiers.length === 0) return res.json({ agreement: AGREEMENT, people: [] });
+    users = db.prepare(
+      `SELECT id, name, email, role, tier FROM users WHERE role='member' AND status='active'
+       AND tier IN (${tiers.map(() => '?').join(',')}) ORDER BY name`
+    ).all(...tiers);
+  }
+  const sigs = new Map(db.prepare(
+    'SELECT user_id, printed_name, signed_at FROM agreement_signatures WHERE version = ?'
+  ).all(AGREEMENT.version).map((r) => [r.user_id, r]));
+  const people = users.map((u) => {
+    const s = sigs.get(u.id);
+    return { ...u, signed: !!s, printed_name: s?.printed_name || null, signed_at: s?.signed_at || null };
+  });
+  res.json({ agreement: AGREEMENT, people });
+});
+
+// Staff: view one brother's signed acknowledgement.
+app.get('/api/staff/agreement/:userId', authRequired, staffRequired, (req, res) => {
+  const u = db.prepare('SELECT id, name, email, role, tier FROM users WHERE id = ?').get(req.params.userId);
+  if (!u) return res.status(404).json({ error: 'Account not found.' });
+  if (req.user.role !== 'admin' && !(u.role === 'member' && tiersFor(req.user).includes(u.tier)))
+    return res.status(403).json({ error: 'Not in your challenge group.' });
+  const sig = db.prepare(
+    'SELECT printed_name, signature, signed_at FROM agreement_signatures WHERE user_id = ? AND version = ?'
+  ).get(u.id, AGREEMENT.version);
+  if (!sig) return res.status(404).json({ error: `${u.name} hasn't signed yet.` });
+  res.json({ user: u, signature: sig, agreement: AGREEMENT });
 });
 
 // --- Static frontend ------------------------------------------------------

@@ -89,6 +89,20 @@ CREATE TABLE IF NOT EXISTS post_comments (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS agreement_signatures (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- Kept even if the account is later deleted, so the chapter keeps its signed record.
+  user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  username      TEXT NOT NULL,
+  version       TEXT NOT NULL,                     -- which agreement was signed, e.g. fl-nu-2026
+  printed_name  TEXT NOT NULL,
+  signature     TEXT NOT NULL,                     -- drawn signature as a PNG data URL
+  signed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  ip            TEXT,
+  user_agent    TEXT,
+  UNIQUE(user_id, version)
+);
+
 CREATE TABLE IF NOT EXISTS post_reactions (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,

@@ -57,6 +57,7 @@ async function boot() {
     const data = await api('/auth/me');
     state.user = data.user;
     state.tiers = data.tiers;
+    state.agreement = data.agreement || null;
     state.view = isStaff() ? 'queue' : 'dashboard';
     render();
   } catch {
@@ -141,6 +142,7 @@ function renderAuth() {
       state.user = data.user;
       const me = await api('/auth/me');
       state.tiers = me.tiers;
+      state.agreement = me.agreement || null;
       state.view = isStaff() ? 'queue' : 'dashboard';
       render();
     } catch (err) {
@@ -162,9 +164,11 @@ function renderShell(content) {
     tabs.push(['leaderboard', 'Leaderboard']);
     tabs.push(['community', 'Community']);
     tabs.push(['events', 'Event Requests']);
+    tabs.push(['agreement', 'Agreement']);
   } else {
-    tabs = [['dashboard', 'My Challenge'], ['leaderboard', 'Leaderboard'], ['community', 'Community'], ['events', 'Event Requests']];
+    tabs = [['dashboard', 'My Challenge'], ['agreement', 'Membership Agreement'], ['leaderboard', 'Leaderboard'], ['community', 'Community'], ['events', 'Event Requests']];
   }
+  const needsToSign = state.agreement && !state.agreement.signed;
   App.innerHTML = `
     <div class="shell">
       <div class="topbar">
@@ -177,8 +181,9 @@ function renderShell(content) {
       <div class="container">
         ${(state.view === 'member') ? '' : `<div class="tabs">${tabs.map(([k, label]) => {
           const count = (k === 'queue' && state._queueCount) || (k === 'pending' && state._pendingCount) || 0;
+          const flag = k === 'agreement' && needsToSign;
           return `<button class="tab ${state.view === k ? 'active' : ''}" data-tab="${k}">${label}${
-            count ? `<span class="badge">${count}</span>` : ''}</button>`;
+            count ? `<span class="badge">${count}</span>` : ''}${flag ? '<span class="badge" title="Not signed yet">Sign</span>' : ''}</button>`;
         }).join('')}</div>`}
         <div id="view">${content}</div>
       </div>
@@ -295,6 +300,7 @@ function render() {
   else if (state.view === 'leaderboard') renderLeaderboard();
   else if (state.view === 'community') renderCommunity();
   else if (state.view === 'member') renderMemberDetail();
+  else if (state.view === 'agreement') renderAgreement();
 }
 
 function renderWaiting() {
@@ -403,7 +409,8 @@ async function renderDashboard() {
   const groupsHtml = groups.map((g) => renderGroup(g, rules, p, /*staff*/ false)).join('');
 
   const exportMine = '<div style="margin:2px 0 14px"><button class="btn ghost sm" id="export-mine">⬇ Download my progress (Excel)</button></div>';
-  setView(hero + exportMine + summary + groupsHtml);
+  setView(agreementBanner() + hero + exportMine + summary + groupsHtml);
+  document.getElementById('go-sign')?.addEventListener('click', () => { state.view = 'agreement'; render(); });
   wireMemberItems();
   document.getElementById('export-mine')?.addEventListener('click', () => { window.location.assign('/api/my/export'); });
 }
@@ -812,7 +819,7 @@ async function renderRoles() {
       // If we just changed our own role, refresh the session and route to the right home.
       if (res.self) {
         const me = await api('/auth/me');
-        state.user = me.user; state.tiers = me.tiers;
+        state.user = me.user; state.tiers = me.tiers; state.agreement = me.agreement || null;
         state.view = isStaff() ? 'queue' : 'dashboard';
         toast('Your role was updated', 'ok');
         return render();
@@ -1387,3 +1394,264 @@ async function loadFeed() {
 
 
 boot();
+
+
+// ===========================================================================
+// MEMBERSHIP AGREEMENT — read & sign (everyone), signed / not-signed tracker (staff)
+// ===========================================================================
+function agreementBanner() {
+  if (!state.agreement || state.agreement.signed) return '';
+  return `
+    <div class="sign-banner">
+      <div><b>Sign the 2026 Membership Agreement</b><span>Every brother needs to read and sign the Florida Nu Membership Agreement.</span></div>
+      <button class="btn sm" id="go-sign">Read &amp; sign</button>
+    </div>`;
+}
+
+async function renderAgreement() {
+  let data;
+  try { data = await api('/agreement'); } catch (e) { return showError(e); }
+  const a = data.agreement;
+  const staff = isStaff();
+  const mode = staff ? (state.agMode || 'tracker') : 'sign';
+
+  const switcher = staff ? `
+    <div class="filter-row">
+      <div class="count-chips" style="margin-left:0">
+        <button type="button" class="count-chip ${mode === 'tracker' ? 'active' : ''}" data-agmode="tracker">Who has signed</button>
+        <button type="button" class="count-chip ${mode === 'sign' ? 'active' : ''}" data-agmode="sign">Read &amp; sign it yourself${data.signature ? ' ✓' : ''}</button>
+      </div>
+    </div>` : '';
+
+  const head = `
+    <h2 class="section-title">${esc(a.title)}</h2>
+    <p class="section-sub">${esc(a.updated)}. ${staff ? 'Track who has signed, or read and sign it yourself.' : 'Read the full agreement below, then sign at the bottom.'}</p>
+    ${switcher}`;
+
+  if (mode === 'tracker') return renderAgreementTracker(head, a);
+
+  const pages = Array.from({ length: a.pages }, (_, i) =>
+    `<img class="ag-page" src="/api/agreement/page/${i + 1}" alt="Membership Agreement page ${i + 1} of ${a.pages}" loading="${i < 2 ? 'eager' : 'lazy'}" width="935" height="1210" />`).join('');
+  const pdfBtn = `<a class="btn ghost sm" href="/api/agreement/pdf">Download PDF</a>`;
+
+  if (data.signature) {
+    const sg = data.signature;
+    setView(`${head}
+      <div class="card ag-signed">
+        <div class="ag-signed-top">
+          <div><div class="ag-ok">✓ Signed</div>
+            <p>You signed the agreement on <b>${esc(fmtDate(sg.signed_at))}</b> as <b>${esc(sg.printed_name)}</b>.</p></div>
+          ${pdfBtn}
+        </div>
+        <div class="ag-sig-view"><img src="${esc(sg.signature)}" alt="Your signature" /></div>
+      </div>
+      <details class="ag-details"><summary>View the agreement</summary><div class="ag-pages">${pages}</div></details>`);
+    bindAgreementSwitcher();
+    return;
+  }
+
+  const today = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+  setView(`${head}
+    <div class="ag-toolbar"><span>${a.pages} pages · scroll to read</span>${pdfBtn}</div>
+    <div class="ag-pages">${pages}</div>
+    <div class="card ag-form" id="ag-form">
+      <h3>Membership Agreement Acknowledgement Form</h3>
+      <div id="ag-error"></div>
+      <label class="ag-check"><input type="checkbox" id="ag-agree" />
+        <span>${esc(a.acknowledgement)}</span></label>
+      <div class="field">
+        <label>Member name (printed)</label>
+        <input id="ag-name" autocomplete="name" value="${esc(state.user.name)}" placeholder="First Last" />
+      </div>
+      <div class="field">
+        <label>Member signature</label>
+        <div class="sig-pad"><canvas id="sig-canvas"></canvas><span class="sig-hint" id="sig-hint">Sign here with your finger or mouse</span></div>
+        <div class="sig-actions"><button type="button" class="btn ghost tiny" id="sig-clear">Clear</button></div>
+      </div>
+      <div class="field"><label>Date</label><div class="ag-date">${esc(today)}</div></div>
+      <button class="btn full" id="ag-submit" disabled>Sign agreement</button>
+    </div>`);
+  bindAgreementSwitcher();
+
+  const pad = makeSignaturePad(document.getElementById('sig-canvas'), () => {
+    document.getElementById('sig-hint').style.display = pad.isEmpty() ? '' : 'none';
+    update();
+  });
+  const agree = document.getElementById('ag-agree');
+  const nameEl = document.getElementById('ag-name');
+  const btn = document.getElementById('ag-submit');
+  function update() {
+    btn.disabled = !(agree.checked && !pad.isEmpty() && nameEl.value.trim().split(/\s+/).length >= 2);
+  }
+  agree.addEventListener('change', update);
+  nameEl.addEventListener('input', update);
+  document.getElementById('sig-clear').addEventListener('click', () => pad.clear());
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true; btn.textContent = 'Signing…';
+    try {
+      const res = await api('/agreement/sign', { method: 'POST', body: {
+        version: a.version, agree: agree.checked, printed_name: nameEl.value, signature: pad.toDataURL(),
+      } });
+      state.agreement = res.agreement;
+      toast('Agreement signed — thank you!', 'ok');
+      render();
+      window.scrollTo(0, 0);
+    } catch (err) {
+      document.getElementById('ag-error').innerHTML = `<div class="error-banner">${esc(err.message)}</div>`;
+      btn.textContent = 'Sign agreement'; update();
+    }
+  });
+}
+
+function bindAgreementSwitcher() {
+  App.querySelectorAll('[data-agmode]').forEach((b) => b.addEventListener('click', () => {
+    state.agMode = b.dataset.agmode; renderAgreement();
+  }));
+}
+
+// A simple draw-your-signature pad (mouse, finger, or stylus).
+function makeSignaturePad(canvas, onChange) {
+  const ctx = canvas.getContext('2d');
+  let strokes = 0, inkLength = 0, drawing = false, last = null;
+  function setup() {
+    const ratio = Math.max(1, window.devicePixelRatio || 1);
+    const w = canvas.parentElement.clientWidth;
+    const h = Math.round(Math.min(200, Math.max(140, w * 0.32)));
+    canvas.width = Math.round(w * ratio); canvas.height = Math.round(h * ratio);
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = '#0a1428'; ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    strokes = 0; inkLength = 0;
+  }
+  const pos = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  canvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); canvas.setPointerCapture(e.pointerId);
+    drawing = true; last = pos(e); strokes++;
+    ctx.beginPath(); ctx.arc(last.x, last.y, 1.1, 0, Math.PI * 2); ctx.fillStyle = '#0a1428'; ctx.fill();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    inkLength += Math.hypot(p.x - last.x, p.y - last.y); last = p;
+  });
+  const end = () => { if (drawing) { drawing = false; onChange && onChange(); } };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+  setup();
+  return {
+    isEmpty: () => strokes === 0 || inkLength < 25,   // a dot or a tiny tick isn't a signature
+    clear: () => { setup(); onChange && onChange(); },
+    toDataURL: () => canvas.toDataURL('image/png'),
+  };
+}
+
+async function renderAgreementTracker(head, a) {
+  let data;
+  try { data = await api('/staff/agreement'); } catch (e) { return showError(e); }
+  const people = data.people;
+  const signedN = people.filter((p) => p.signed).length;
+  const filter = state.agFilter || 'unsigned';
+  const q = (state.agSearch || '').toLowerCase();
+  const shown = people.filter((p) =>
+    (filter === 'all' || (filter === 'signed' ? p.signed : !p.signed)) &&
+    (!q || p.name.toLowerCase().includes(q) || String(p.email).toLowerCase().includes(q)));
+  const pct = people.length ? Math.round(signedN / people.length * 100) : 0;
+
+  const chip = (k, l, n) => `<button type="button" class="count-chip ${filter === k ? 'active' : ''}" data-agfilter="${k}">${l} <b>${n}</b></button>`;
+  const roleLabel = (p) => p.role === 'admin' ? 'VPMD' : p.role === 'coordinator' ? `${tierLabel(p.tier)} coord.` : tierLabel(p.tier);
+  const rows = shown.map((p) => `
+    <div class="roster-row ag-row ${p.signed ? 'is-signed' : ''}" ${p.signed ? `data-agview="${p.id}"` : 'style="cursor:default"'}>
+      <div><div class="name">${esc(p.name)}</div><div class="email">${esc(p.email)}</div></div>
+      <div class="ag-status">${p.signed
+        ? `<span class="ag-ok sm">✓ Signed</span><small>${esc(fmtDate(p.signed_at))}</small>`
+        : '<span class="ag-no">Not signed</span>'}</div>
+      <div><span class="tier-chip">${esc(roleLabel(p))}</span></div>
+    </div>`).join('');
+
+  setView(`${head}
+    <div class="card ag-progress">
+      <div class="label">Signed</div>
+      <div class="value">${signedN}<small> / ${people.length} brothers</small></div>
+      <div class="bar ${pct >= 100 ? 'green' : ''}"><i style="width:${pct}%"></i></div>
+    </div>
+    <div class="filter-row">
+      <div class="count-chips" style="margin-left:0">
+        ${chip('unsigned', 'Not signed', people.length - signedN)}${chip('signed', 'Signed', signedN)}${chip('all', 'All', people.length)}
+      </div>
+      <input class="ag-search" id="ag-search" placeholder="Search name…" value="${esc(state.agSearch || '')}" />
+      <button class="btn ghost sm" id="ag-csv">Download list (CSV)</button>
+    </div>
+    <div class="roster">${rows || `<div class="empty"><div class="big">${filter === 'unsigned' ? '🎉' : '📝'}</div>${
+      filter === 'unsigned' && !q ? 'Everyone has signed!' : 'Nobody matches.'}</div>`}</div>`);
+
+  bindAgreementSwitcher();
+  App.querySelectorAll('[data-agfilter]').forEach((b) => b.addEventListener('click', () => {
+    state.agFilter = b.dataset.agfilter; renderAgreementTracker(head, a);
+  }));
+  const search = document.getElementById('ag-search');
+  search.addEventListener('input', () => {
+    state.agSearch = search.value;
+    clearTimeout(state._agT);
+    state._agT = setTimeout(async () => {
+      await renderAgreementTracker(head, a);
+      const el = document.getElementById('ag-search');
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+    }, 250);
+  });
+  App.querySelectorAll('[data-agview]').forEach((r) => r.addEventListener('click', () => openSignatureModal(r.dataset.agview)));
+  document.getElementById('ag-csv').addEventListener('click', () => {
+    const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [['Name', 'Username', 'Role / challenge', 'Signed', 'Printed name', 'Signed on'].map(cell).join(',')]
+      .concat(people.map((p) => [p.name, p.email, roleLabel(p), p.signed ? 'Yes' : 'No', p.printed_name || '', fmtDate(p.signed_at)].map(cell).join(',')));
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob); link.download = `membership-agreement-${a.version}-signatures.csv`;
+    document.body.appendChild(link); link.click(); link.remove();
+  });
+}
+
+async function openSignatureModal(userId) {
+  let d;
+  try { d = await api(`/staff/agreement/${userId}`); } catch (e) { return toast(e.message, 'err'); }
+  const s = d.signature;
+  ModalRoot.innerHTML = `
+    <div class="modal-overlay" id="sg-overlay">
+      <div class="modal" style="max-width:520px">
+        <div class="modal-head"><h3>${esc(d.user.name)}</h3><p>${esc(d.agreement.title)} · ${esc(d.agreement.updated)}</p></div>
+        <div class="modal-body">
+          <p class="ag-ack-text">${esc(d.agreement.acknowledgement)}</p>
+          <div class="ag-kv"><span>Printed name</span><b>${esc(s.printed_name)}</b></div>
+          <div class="ag-sig-view"><img src="${esc(s.signature)}" alt="Signature of ${esc(s.printed_name)}" /></div>
+          <div class="ag-kv"><span>Date signed</span><b>${esc(fmtDate(s.signed_at))}</b></div>
+          <div class="ag-kv"><span>Account</span><b>${esc(d.user.email)}</b></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost" id="sg-print">Print / save as PDF</button>
+          <button class="btn" id="sg-close">Close</button>
+        </div>
+      </div>
+    </div>`;
+  const close = () => { ModalRoot.innerHTML = ''; };
+  document.getElementById('sg-close').addEventListener('click', close);
+  document.getElementById('sg-overlay').addEventListener('click', (e) => { if (e.target.id === 'sg-overlay') close(); });
+  document.getElementById('sg-print').addEventListener('click', () => {
+    const w = window.open('', '_blank');
+    if (!w) return toast('Allow pop-ups to print this record.', 'err');
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(s.printed_name)} — Membership Agreement</title>
+      <style>body{font-family:Georgia,serif;max-width:640px;margin:48px auto;color:#111;padding:0 24px}h1{font-size:20px;margin:0 0 4px}
+      .sub{color:#555;margin:0 0 28px;font-size:14px}.ack{font-weight:bold;line-height:1.5;margin:0 0 28px}.lbl{font-size:12px;color:#555;text-transform:uppercase;letter-spacing:1px;margin-top:22px}
+      .val{font-size:17px;border-bottom:1px solid #999;padding:6px 0}img{max-width:100%;height:auto;border-bottom:1px solid #999;display:block}</style></head><body>
+      <h1>Membership Agreement Acknowledgement Form</h1>
+      <p class="sub">Sigma Phi Epsilon Fraternity, Florida Nu Chapter · ${esc(d.agreement.updated)}</p>
+      <p class="ack">${esc(d.agreement.acknowledgement)}</p>
+      <div class="lbl">Member Name (Printed)</div><div class="val">${esc(s.printed_name)}</div>
+      <div class="lbl">Member Name (Signature)</div><img src="${esc(s.signature)}" alt="signature" />
+      <div class="lbl">Date</div><div class="val">${esc(fmtDate(s.signed_at))}</div>
+      <div class="lbl">Signed online at jousefiu.com by account</div><div class="val">${esc(d.user.email)}</div>
+      <script>window.onload=()=>window.print()<\/script></body></html>`);
+    w.document.close();
+  });
+}
