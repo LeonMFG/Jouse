@@ -47,7 +47,12 @@ function toast(msg, kind = '') {
   setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 300); }, 2800);
 }
 
-const isStaff = () => state.user && (state.user.role === 'coordinator' || state.user.role === 'admin');
+// The VPMD (admin) and the chapter Advisor both have full, chapter-wide access.
+const FULL_ACCESS_ROLES = ['admin', 'advisor'];
+const isFullAccessRole = (r) => FULL_ACCESS_ROLES.includes(r);
+const hasFullAccess = () => !!state.user && isFullAccessRole(state.user.role);
+const isStaff = () => state.user && (state.user.role === 'coordinator' || hasFullAccess());
+const roleName = (r) => r === 'admin' ? 'VPMD' : r === 'advisor' ? 'Advisor' : r ? r[0].toUpperCase() + r.slice(1) : '';
 
 // ===========================================================================
 // BOOT
@@ -160,7 +165,7 @@ function renderShell(content) {
   let tabs;
   if (isStaff()) {
     tabs = [['queue', 'Review Queue'], ['roster', 'My Members'], ['pending', 'Pending']];
-    if (u.role === 'admin') { tabs.push(['roles', 'Manage Roles']); tabs.push(['challenges', 'Challenges']); }
+    if (hasFullAccess()) { tabs.push(['roles', 'Manage Roles']); tabs.push(['challenges', 'Challenges']); }
     tabs.push(['leaderboard', 'Leaderboard']);
     tabs.push(['community', 'Community']);
     tabs.push(['events', 'Event Requests']);
@@ -174,7 +179,7 @@ function renderShell(content) {
       <div class="topbar">
         <div class="logo"><img class="crest-mark" src="/crest.svg" alt="ΣΦΕ" /> BMP Tracker</div>
         <div class="spacer"></div>
-        <div class="who"><b>${esc(u.name)}</b><span>${esc(u.role)}${u.tier ? ' · ' + esc(tierLabel(u.tier)) : ''}</span></div>
+        <div class="who"><b>${esc(u.name)}</b><span>${esc(roleName(u.role))}${u.tier ? ' · ' + esc(tierLabel(u.tier)) : ''}</span></div>
         <button class="out" id="account">Account</button>
         <button class="out" id="logout">Sign out</button>
       </div>
@@ -768,13 +773,14 @@ async function renderRoles() {
 
   const tierOpts = (sel) => TIER_KEYS
     .map((t) => `<option value="${t}" ${sel === t ? 'selected' : ''}>${tierLabel(t)}</option>`).join('');
-  const roleOpts = (sel) => ['member', 'coordinator', 'admin']
-    .map((r) => `<option value="${r}" ${sel === r ? 'selected' : ''}>${r === 'admin' ? 'Admin (VPMD)' : r[0].toUpperCase() + r.slice(1)}</option>`).join('');
+  const roleOpts = (sel) => ['member', 'coordinator', 'admin', 'advisor']
+    .map((r) => `<option value="${r}" ${sel === r ? 'selected' : ''}>${r === 'admin' ? 'Admin (VPMD)' : r === 'advisor' ? 'Advisor' : r[0].toUpperCase() + r.slice(1)}</option>`).join('');
 
   const adminCount = data.users.filter((u) => u.role === 'admin').length;
   const rows = data.users.map((u) => {
     const isSelf = u.id === state.user.id;
     const badge = u.role === 'admin' ? '<span class="tier-chip" style="background:var(--red);color:#fff">VPMD</span>'
+      : u.role === 'advisor' ? '<span class="tier-chip" style="background:var(--red);color:#fff">Advisor</span>'
       : u.role === 'coordinator' ? `<span class="tier-chip">${esc(tierLabel(u.tier))} coord.</span>` : '';
     return `
       <div class="roster-row" style="cursor:default;grid-template-columns:1fr auto auto auto auto auto" data-row="${u.id}">
@@ -783,7 +789,7 @@ async function renderRoles() {
           <div class="email">${esc(u.email)}${u.status === 'pending' ? ' · <b style="color:var(--amber)">pending</b>' : ''}</div>
         </div>
         <select class="role-sel" data-role="${u.id}">${roleOpts(u.role)}</select>
-        <select class="tier-sel" data-tier="${u.id}" ${u.role === 'admin' ? 'style="visibility:hidden"' : ''}>${tierOpts(u.tier)}</select>
+        <select class="tier-sel" data-tier="${u.id}" ${isFullAccessRole(u.role) ? 'style="visibility:hidden"' : ''}>${tierOpts(u.tier)}</select>
         <button class="btn sm" data-save="${u.id}" data-name="${esc(u.name)}" data-self="${isSelf ? 1 : 0}" data-was="${u.role}">Save</button>
         <button class="btn ghost sm" data-resetpw="${u.id}" data-name="${esc(u.name)}" ${isSelf ? 'style="visibility:hidden"' : ''}>Reset PW</button>
         <button class="btn rose sm" data-del="${u.id}" data-name="${esc(u.name)}" ${isSelf ? 'style="visibility:hidden"' : ''}>Delete</button>
@@ -791,13 +797,13 @@ async function renderRoles() {
   }).join('');
 
   setView(`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px"><h2 class="section-title" style="margin:0">Manage Roles</h2><button class="btn sm" id="create-acct">+ Create account</button></div>
-    <p class="section-sub">Set who is the <b>VPMD (admin)</b> and who coordinates each challenge. Promoting someone to <b>Admin (VPMD)</b> gives them full chapter-wide access; a <b>Coordinator</b> manages just their own challenge (approving members, reviewing submissions, taking attendance). To hand off the VPMD, promote your successor to Admin first — then you can step yourself down.</p>
+    <p class="section-sub">Set who is the <b>VPMD (admin)</b> and who coordinates each challenge. Promoting someone to <b>Admin (VPMD)</b> or <b>Advisor</b> gives them full chapter-wide access (the same as the VPMD); a <b>Coordinator</b> manages just their own challenge (approving members, reviewing submissions, taking attendance). To hand off the VPMD, promote your successor to Admin first — then you can step yourself down.</p>
     <div class="roster">${rows}</div>`);
 
   // Hide/show tier select when role becomes admin.
   App.querySelectorAll('.role-sel').forEach((sel) => sel.addEventListener('change', () => {
     const tierSel = App.querySelector(`[data-tier="${sel.dataset.role}"]`);
-    if (tierSel) tierSel.style.visibility = sel.value === 'admin' ? 'hidden' : 'visible';
+    if (tierSel) tierSel.style.visibility = isFullAccessRole(sel.value) ? 'hidden' : 'visible';
   }));
 
   App.querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', async () => {
@@ -808,10 +814,10 @@ async function renderRoles() {
     const name = b.dataset.name;
 
     // Confirm sensitive changes.
-    if (role === 'admin' && b.dataset.was !== 'admin' &&
-        !confirm(`Give ${name} full VPMD (admin) access? They'll be able to manage every challenge and every brother — including roles.`)) return;
-    if (isSelf && role !== 'admin' &&
-        !confirm(`Step yourself down from VPMD to ${role}? You'll lose admin access immediately. Make sure another VPMD exists.`)) return;
+    if (isFullAccessRole(role) && !isFullAccessRole(b.dataset.was) &&
+        !confirm(`Make ${name} ${role === 'advisor' ? 'an Advisor' : 'the VPMD (admin)'}? They'll have full access: every challenge, every brother, and roles.`)) return;
+    if (isSelf && isFullAccessRole(b.dataset.was) && !isFullAccessRole(role) &&
+        !confirm(`Step yourself down from ${roleName(b.dataset.was)} to ${role}? You'll lose full access immediately.`)) return;
 
     b.disabled = true; b.textContent = 'Saving…';
     try {
@@ -1111,6 +1117,7 @@ function openCreateAccountModal() {
               <option value="member">Member</option>
               <option value="coordinator">Coordinator</option>
               <option value="admin">Admin (VPMD)</option>
+              <option value="advisor">Advisor</option>
             </select>
           </div>
           <div class="field" id="ca-tier-field"><label>Challenge</label>
@@ -1133,14 +1140,14 @@ function openCreateAccountModal() {
   document.getElementById('ca-overlay').addEventListener('click', (e) => { if (e.target.id === 'ca-overlay') close(); });
   const roleSel = document.getElementById('ca-role');
   roleSel.addEventListener('change', () => {
-    document.getElementById('ca-tier-field').style.display = roleSel.value === 'admin' ? 'none' : '';
+    document.getElementById('ca-tier-field').style.display = isFullAccessRole(roleSel.value) ? 'none' : '';
   });
   document.getElementById('ca-save').addEventListener('click', async () => {
     const name = document.getElementById('ca-name').value.trim();
     const username = document.getElementById('ca-username').value.trim();
     const password = document.getElementById('ca-password').value;
     const role = roleSel.value;
-    const tier = role === 'admin' ? null : document.getElementById('ca-tier').value;
+    const tier = isFullAccessRole(role) ? null : document.getElementById('ca-tier').value;
     const err = (m) => document.getElementById('ca-error').innerHTML = `<div class="error-banner">${esc(m)}</div>`;
     if (!name) return err('Enter a full name.');
     if (!username) return err('Enter a username.');
@@ -1581,7 +1588,7 @@ async function renderAgreementTracker(head, a) {
   const pct = people.length ? Math.round(signedN / people.length * 100) : 0;
 
   const chip = (k, l, n) => `<button type="button" class="count-chip ${filter === k ? 'active' : ''}" data-agfilter="${k}">${l} <b>${n}</b></button>`;
-  const roleLabel = (p) => p.role === 'admin' ? 'VPMD' : p.role === 'coordinator' ? `${tierLabel(p.tier)} coord.` : tierLabel(p.tier);
+  const roleLabel = (p) => isFullAccessRole(p.role) ? roleName(p.role) : p.role === 'coordinator' ? `${tierLabel(p.tier)} coord.` : tierLabel(p.tier);
   const rows = shown.map((p) => `
     <div class="roster-row ag-row ${p.signed ? 'is-signed' : ''}" ${p.signed ? `data-agview="${p.id}"` : 'style="cursor:default"'}>
       <div><div class="name">${esc(p.name)}</div><div class="email">${esc(p.email)}</div></div>

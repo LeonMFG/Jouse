@@ -76,13 +76,18 @@ function authRequired(req, res, next) {
     return res.status(401).json({ error: 'Session expired. Please sign in again.' });
   }
 }
+// Roles with full, chapter-wide access: the VPMD (admin) and the chapter Advisor.
+const FULL_ACCESS_ROLES = ['admin', 'advisor'];
+const hasFullAccess = (user) => !!user && FULL_ACCESS_ROLES.includes(user.role);
+const isStaffUser = (user) => hasFullAccess(user) || (!!user && user.role === 'coordinator');
+
 function staffRequired(req, res, next) {
-  if (req.user.role !== 'coordinator' && req.user.role !== 'admin')
+  if (!isStaffUser(req.user))
     return res.status(403).json({ error: 'Coordinator access required.' });
   next();
 }
 function adminRequired(req, res, next) {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin (VPMD) access required.' });
+  if (!hasFullAccess(req.user)) return res.status(403).json({ error: 'VPMD or Advisor access required.' });
   next();
 }
 // A member must be approved by their coordinator before submitting work.
@@ -93,7 +98,7 @@ function approvedMember(req, res, next) {
 }
 // Which tiers a staff member may review/manage.
 function tiersFor(user) {
-  if (user.role === 'admin') return Object.keys(TIERS);
+  if (hasFullAccess(user)) return Object.keys(TIERS);
   if (user.role === 'coordinator') return user.tier ? [user.tier] : [];
   return [];
 }
@@ -430,16 +435,16 @@ app.post('/api/staff/unmark', authRequired, staffRequired, (req, res) => {
 // ===========================================================================
 app.get('/api/admin/users', authRequired, adminRequired, (req, res) => {
   const users = db.prepare(
-    "SELECT id, name, email, role, tier, status FROM users ORDER BY role='admin' DESC, role='coordinator' DESC, name"
+    "SELECT id, name, email, role, tier, status FROM users ORDER BY role='admin' DESC, role='advisor' DESC, role='coordinator' DESC, name"
   ).all();
   res.json({ users });
 });
 
 app.post('/api/admin/users/:id/role', authRequired, adminRequired, (req, res) => {
-  const role = req.body.role;       // member | coordinator | admin
+  const role = req.body.role;       // member | coordinator | admin | advisor
   let tier = req.body.tier || null; // sigma | phi | epsilon | mentor | null
-  if (!['member', 'coordinator', 'admin'].includes(role)) return res.status(400).json({ error: 'Invalid role.' });
-  if (role === 'admin') tier = null;
+  if (!['member', 'coordinator', ...FULL_ACCESS_ROLES].includes(role)) return res.status(400).json({ error: 'Invalid role.' });
+  if (FULL_ACCESS_ROLES.includes(role)) tier = null;
   if ((role === 'member' || role === 'coordinator') && !TIERS[tier])
     return res.status(400).json({ error: 'Please choose a challenge (Sigma, Phi, Epsilon, or Brother Mentor) for that role.' });
 
@@ -492,7 +497,7 @@ app.post('/api/messages', authRequired, approvedMember, (req, res) => {
 app.delete('/api/messages/:id', authRequired, (req, res) => {
   const m = db.prepare('SELECT user_id FROM messages WHERE id=?').get(req.params.id);
   if (!m) return res.status(404).json({ error: 'Message not found.' });
-  const staff = req.user.role === 'admin' || req.user.role === 'coordinator';
+  const staff = isStaffUser(req.user);
   if (m.user_id !== req.user.id && !staff) return res.status(403).json({ error: 'You can only delete your own messages.' });
   db.prepare('DELETE FROM messages WHERE id=?').run(req.params.id);
   res.json({ ok: true });
@@ -538,7 +543,7 @@ app.post('/api/posts', authRequired, approvedMember, (req, res) => {
 app.delete('/api/posts/:id', authRequired, (req, res) => {
   const p = db.prepare('SELECT user_id FROM posts WHERE id=?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Post not found.' });
-  const staff = req.user.role === 'admin' || req.user.role === 'coordinator';
+  const staff = isStaffUser(req.user);
   if (p.user_id !== req.user.id && !staff) return res.status(403).json({ error: 'You can only delete your own post.' });
   db.prepare('DELETE FROM posts WHERE id=?').run(req.params.id);
   res.json({ ok: true });
@@ -556,7 +561,7 @@ app.post('/api/posts/:id/comments', authRequired, approvedMember, (req, res) => 
 app.delete('/api/posts/:id/comments/:cid', authRequired, (req, res) => {
   const c = db.prepare('SELECT user_id FROM post_comments WHERE id=? AND post_id=?').get(req.params.cid, req.params.id);
   if (!c) return res.status(404).json({ error: 'Comment not found.' });
-  const staff = req.user.role === 'admin' || req.user.role === 'coordinator';
+  const staff = isStaffUser(req.user);
   if (c.user_id !== req.user.id && !staff) return res.status(403).json({ error: 'You can only delete your own comment.' });
   db.prepare('DELETE FROM post_comments WHERE id=?').run(req.params.cid);
   res.json({ ok: true });
@@ -619,7 +624,7 @@ app.post('/api/events', authRequired, approvedMember, (req, res) => {
 app.delete('/api/events/:id', authRequired, (req, res) => {
   const e = db.prepare('SELECT * FROM event_requests WHERE id=?').get(req.params.id);
   if (!e) return res.status(404).json({ error: 'Request not found.' });
-  const isStaff = req.user.role === 'admin' || req.user.role === 'coordinator';
+  const isStaff = isStaffUser(req.user);
   if (e.user_id !== req.user.id && !isStaff) return res.status(403).json({ error: 'You can only remove your own request.' });
   db.prepare('DELETE FROM event_requests WHERE id=?').run(e.id);
   res.json({ ok: true });
@@ -649,8 +654,8 @@ app.post('/api/admin/users', authRequired, adminRequired, (req, res) => {
   if (!name) return res.status(400).json({ error: 'A full name is required.' });
   if (!username) return res.status(400).json({ error: 'A username is required.' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
-  if (!['member', 'coordinator', 'admin'].includes(role)) return res.status(400).json({ error: 'Please choose a valid role.' });
-  if (role === 'admin') tier = null;
+  if (!['member', 'coordinator', ...FULL_ACCESS_ROLES].includes(role)) return res.status(400).json({ error: 'Please choose a valid role.' });
+  if (FULL_ACCESS_ROLES.includes(role)) tier = null;
   else if (!TIERS[tier]) return res.status(400).json({ error: 'Please choose a challenge (Sigma, Phi, Epsilon, or Brother Mentor).' });
   const existing = db.prepare('SELECT 1 FROM users WHERE email = ?').get(username);
   if (existing) return res.status(409).json({ error: 'That username is already taken.' });
@@ -866,7 +871,7 @@ app.get('/uploads/:file', authRequired, (req, res) => {
     .get(`/uploads/${file}`);
   if (!sub) return res.status(404).end();
   const isOwner = sub.user_id === req.user.id;
-  const isStaff = (req.user.role === 'admin') ||
+  const isStaff = hasFullAccess(req.user) ||
     (req.user.role === 'coordinator' && tiersFor(req.user).includes(sub.member_tier));
   if (!isOwner && !isStaff) return res.status(403).end();
   res.sendFile(path.join(UPLOAD_DIR, file));
@@ -1002,7 +1007,7 @@ app.post('/api/agreement/sign', authRequired, approvedMember, (req, res) => {
 // Staff: who has and hasn't signed. VPMD sees every active account; coordinators see their group.
 app.get('/api/staff/agreement', authRequired, staffRequired, (req, res) => {
   let users;
-  if (req.user.role === 'admin') {
+  if (hasFullAccess(req.user)) {
     users = db.prepare("SELECT id, name, email, role, tier FROM users WHERE status = 'active' ORDER BY name").all();
   } else {
     const tiers = tiersFor(req.user);
@@ -1026,7 +1031,7 @@ app.get('/api/staff/agreement', authRequired, staffRequired, (req, res) => {
 app.get('/api/staff/agreement/:userId', authRequired, staffRequired, (req, res) => {
   const u = db.prepare('SELECT id, name, email, role, tier FROM users WHERE id = ?').get(req.params.userId);
   if (!u) return res.status(404).json({ error: 'Account not found.' });
-  if (req.user.role !== 'admin' && !(u.role === 'member' && tiersFor(req.user).includes(u.tier)))
+  if (!hasFullAccess(req.user) && !(u.role === 'member' && tiersFor(req.user).includes(u.tier)))
     return res.status(403).json({ error: 'Not in your challenge group.' });
   const sig = db.prepare(
     'SELECT printed_name, signature, signed_at FROM agreement_signatures WHERE user_id = ? AND version = ?'
@@ -1040,7 +1045,7 @@ app.get('/api/staff/agreement/:userId/pdf', authRequired, staffRequired, async (
   try {
     const u = db.prepare('SELECT id, role, tier FROM users WHERE id = ?').get(req.params.userId);
     if (!u) return res.status(404).json({ error: 'Account not found.' });
-    if (req.user.role !== 'admin' && !(u.role === 'member' && tiersFor(req.user).includes(u.tier)))
+    if (!hasFullAccess(req.user) && !(u.role === 'member' && tiersFor(req.user).includes(u.tier)))
       return res.status(403).json({ error: 'Not in your challenge group.' });
     const sig = db.prepare(
       'SELECT printed_name, signature, signed_at, username FROM agreement_signatures WHERE user_id = ? AND version = ?'
